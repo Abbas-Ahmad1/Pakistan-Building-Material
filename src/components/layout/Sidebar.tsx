@@ -1,0 +1,128 @@
+import React from 'react';
+import { useAuth } from '../../context/AuthContext';
+import {
+  LayoutDashboard,
+  ShoppingCart,
+  Package,
+  Boxes,
+  Layers,
+  Truck,
+  Users,
+  ShoppingBag,
+  Receipt,
+  Wallet,
+  TrendingUp,
+  FileText,
+  Flame,
+  Calculator,
+  UserCheck,
+  Settings as SettingsIcon,
+  ShieldAlert,
+  HelpCircle,
+  FileCheck,
+  Barcode,
+  Globe,
+} from 'lucide-react';
+
+interface SidebarProps {
+  currentView: string;
+  onSelectView: (view: string) => void;
+  onViewWebsite?: () => void;
+}
+
+export const Sidebar: React.FC<SidebarProps> = ({ currentView, onSelectView, onViewWebsite }) => {
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'ADMIN';
+
+  const navItems = [
+    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, role: 'ALL' },
+    { id: 'pos', label: 'POS Terminal', icon: ShoppingCart, role: 'ALL', badge: 'Active' },
+    { id: 'products', label: 'Products', icon: Package, role: 'ALL' },
+    { id: 'categories', label: 'Categories', icon: Layers, role: 'ADMIN' },
+    { id: 'inventory', label: 'Inventory & Stock', icon: Boxes, role: 'ADMIN' },
+    { id: 'barcodes', label: 'Barcode & Shelf Tags', icon: Barcode, role: 'ADMIN' },
+    { id: 'purchases', label: 'Purchases (Stock In)', icon: ShoppingBag, role: 'ADMIN' },
+    { id: 'suppliers', label: 'Suppliers', icon: Truck, role: 'ADMIN' },
+    { id: 'customers', label: 'Customers & Credit', icon: Users, role: 'ALL' },
+    { id: 'quotations', label: 'Estimates / Quotations', icon: FileCheck, role: 'ALL' },
+    { id: 'sales', label: 'Sales & Invoices', icon: Receipt, role: 'ALL' },
+    { id: 'expenses', label: 'Expenses', icon: Wallet, role: 'ADMIN' },
+    { id: 'profit-loss', label: 'Profit & Loss', icon: TrendingUp, role: 'ADMIN' },
+    { id: 'reports', label: 'Business Reports', icon: FileText, role: 'ADMIN' },
+    { id: 'bestsellers', label: 'Best Sellers', icon: Flame, role: 'ADMIN' },
+    { id: 'zakat', label: 'Zakat Calculator', icon: Calculator, role: 'ADMIN' },
+    { id: 'users', label: 'User Roles', icon: UserCheck, role: 'ADMIN' },
+    { id: 'audit-logs', label: 'Audit Logs', icon: ShieldAlert, role: 'ADMIN' },
+    { id: 'settings', label: 'Store Settings', icon: SettingsIcon, role: 'ADMIN' },
+  ];
+
+  const visibleItems = navItems.filter((item) => item.role === 'ALL' || (item.role === 'ADMIN' && isAdmin));
+
+  return (
+    <aside className="w-64 bg-stone-900 text-stone-300 flex flex-col h-screen shrink-0 border-r border-stone-800">
+      {/* Brand Header */}
+      <div className="p-4 border-b border-stone-800 space-y-3">
+        <div className="flex items-center space-x-3">
+          <div className="w-9 h-9 rounded-lg bg-amber-600 flex items-center justify-center text-white font-bold shadow-sm">
+            HS
+          </div>
+          <div className="flex flex-col">
+            <span className="font-bold text-sm text-stone-100 tracking-tight">HARDWARE POS</span>
+            <span className="text-[11px] text-amber-400 font-medium">Sanitary & Building Materials</span>
+          </div>
+        </div>
+
+        {onViewWebsite && (
+          <button
+            type="button"
+            onClick={onViewWebsite}
+            className="w-full flex items-center justify-center space-x-2 py-1.5 px-3 bg-emerald-950/60 hover:bg-emerald-900/80 border border-emerald-700/60 rounded-lg text-xs text-emerald-300 font-bold transition-all shadow-xs"
+          >
+            <Globe className="w-3.5 h-3.5 text-emerald-400" />
+            <span>🌐 View Customer Website</span>
+          </button>
+        )}
+      </div>
+
+      {/* Navigation List */}
+      <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-1 scrollbar-thin scrollbar-thumb-stone-700">
+        <div className="px-3 pb-2 text-[10px] font-semibold text-stone-400 uppercase tracking-wider">
+          {isAdmin ? 'Store Operations' : 'Cashier Terminal'}
+        </div>
+
+        {visibleItems.map((item) => {
+          const Icon = item.icon;
+          const isActive = currentView === item.id;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => onSelectView(item.id)}
+              className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-xs font-medium transition-colors ${
+                isActive
+                  ? 'bg-amber-600 text-white font-semibold shadow-xs'
+                  : 'text-stone-300 hover:bg-stone-800 hover:text-white'
+              }`}
+            >
+              <div className="flex items-center space-x-3">
+                <Icon className={`w-4 h-4 ${isActive ? 'text-white' : 'text-stone-400'}`} />
+                <span>{item.label}</span>
+              </div>
+              {item.badge && (
+                <span className="text-[9px] uppercase px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                  {item.badge}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </nav>
+
+      {/* Footer info */}
+      <div className="p-3 border-t border-stone-800 bg-stone-950/50 text-[11px] text-stone-400 flex items-center justify-between">
+        <span>Phase 1 Activated</span>
+        <span className="text-amber-500 font-mono text-[10px]">v1.0-RC</span>
+      </div>
+    </aside>
+  );
+};
