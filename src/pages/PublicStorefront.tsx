@@ -63,6 +63,8 @@ export const PublicStorefront: React.FC<PublicStorefrontProps> = ({
   const [customerAddress, setCustomerAddress] = useState<string>('');
   const [customerPhone, setCustomerPhone] = useState<string>('');
   const [customerNotes, setCustomerNotes] = useState<string>('');
+  const [isSubmittingInquiry, setIsSubmittingInquiry] = useState<boolean>(false);
+  const [inquirySuccessInfo, setInquirySuccessInfo] = useState<{ quotationNumber: string } | null>(null);
 
   // Fetch public products and categories
   useEffect(() => {
@@ -160,18 +162,61 @@ export const PublicStorefront: React.FC<PublicStorefrontProps> = ({
     return cart.reduce((sum, item) => sum + item.quantity, 0);
   }, [cart]);
 
-  // Clean phone number for WhatsApp
-  const rawPhone = settings.phone || '+92 300 1234567';
-  const cleanPhone = rawPhone.replace(/[^0-9]/g, '');
-  const waNumber = cleanPhone.startsWith('92') ? cleanPhone : '92' + cleanPhone.replace(/^0/, '');
+  // Phone numbers configuration
+  const primaryPhone = settings.phone_primary || '+92 300 5936652';
+  const secondaryPhone = settings.phone_secondary || '+92 305 9632244';
 
-  // Generate WhatsApp inquiry link
-  const sendWhatsAppInquiry = () => {
-    if (cart.length === 0) return;
+  const cleanPhone = (num: string) => {
+    const digits = (num || '').replace(/[^0-9]/g, '');
+    return digits.startsWith('92') ? digits : '92' + digits.replace(/^0/, '');
+  };
 
+  const waNumber1 = cleanPhone(primaryPhone);
+  const waNumber2 = cleanPhone(secondaryPhone);
+
+  // Generate WhatsApp inquiry link and save directly to SQLite backend
+  const sendWhatsAppInquiry = async () => {
+    if (cart.length === 0 || isSubmittingInquiry) return;
+    setIsSubmittingInquiry(true);
+
+    let createdQuotationNumber = '';
+    try {
+      // 1. Save quotation automatically to SQLite backend database
+      const quotePayload = {
+        customer_name: customerName.trim() || 'Online Customer / Contractor',
+        customer_phone: customerPhone.trim() || 'Website Inquiry',
+        project_title: customerAddress.trim() ? `Delivery Site: ${customerAddress.trim()}` : 'Website Material Estimate',
+        notes: customerNotes.trim() || 'Submitted via online website catalog cart.',
+        items: cart.map((item) => ({
+          product_id: item.product.id,
+          quantity: item.quantity,
+          unit_price: item.product.selling_price || 0,
+        })),
+      };
+
+      const res = await apiRequest<{ id: number; quotation_number: string }>('/api/quotations', {
+        method: 'POST',
+        body: JSON.stringify(quotePayload),
+      });
+
+      if (res.success && res.data?.quotation_number) {
+        createdQuotationNumber = res.data.quotation_number;
+        setInquirySuccessInfo({ quotationNumber: createdQuotationNumber });
+      }
+    } catch (e) {
+      console.warn('Could not save estimate to database directly, continuing to WhatsApp:', e);
+    } finally {
+      setIsSubmittingInquiry(false);
+    }
+
+    // 2. Prepare WhatsApp message
     let message = `*Assalam o Alaikum! New Order / Estimate Inquiry*\n`;
+    if (createdQuotationNumber) {
+      message += `*Estimate Ref:* #${createdQuotationNumber}\n`;
+    }
     message += `*Store:* ${settings.store_name}\n`;
     message += `*Proprietor:* ${settings.owner_name || 'Imtiaz Ali'}\n`;
+    message += `*Location:* ${settings.address}\n`;
     message += `----------------------------------------\n`;
 
     if (customerName.trim()) {
@@ -202,12 +247,12 @@ export const PublicStorefront: React.FC<PublicStorefrontProps> = ({
     message += `Please confirm current stock availability, wholesale contractor discount, and delivery schedule. Thank you!`;
 
     const encoded = encodeURIComponent(message);
-    window.open(`https://wa.me/${waNumber}?text=${encoded}`, '_blank');
+    window.open(`https://wa.me/${waNumber1}?text=${encoded}`, '_blank');
   };
 
   const sendSingleItemInquiry = (product: Product) => {
-    const text = `Assalam o Alaikum Imtiaz Ali Sahib! I am interested in: *${product.name}* (${product.brand || 'Product SKU: ' + product.sku}) priced at Rs. ${product.selling_price?.toLocaleString()} per ${product.unit || 'unit'}. Please confirm wholesale availability & delivery.`;
-    window.open(`https://wa.me/${waNumber}?text=${encodeURIComponent(text)}`, '_blank');
+    const text = `Assalam o Alaikum Imtiaz Ali Sahib! I am interested in: *${product.name}* (${product.brand || 'Product SKU: ' + product.sku}) priced at Rs. ${product.selling_price?.toLocaleString()} per ${product.unit || 'unit'}. Please confirm wholesale availability at Kumber Bazar store.`;
+    window.open(`https://wa.me/${waNumber1}?text=${encodeURIComponent(text)}`, '_blank');
   };
 
   return (
@@ -225,16 +270,27 @@ export const PublicStorefront: React.FC<PublicStorefrontProps> = ({
             <span className="hidden lg:inline text-stone-400">Wholesale & Retail Authorized Dealer</span>
           </div>
 
-          <div className="flex items-center space-x-4">
-            <a
-              href={`tel:${settings.phone || '+923001234567'}`}
-              className="flex items-center space-x-1 text-stone-300 hover:text-amber-400 transition-colors"
-            >
-              <Phone className="w-3.5 h-3.5 text-amber-500" />
-              <span>{settings.phone || '+92 300 1234567'}</span>
-            </a>
+          <div className="flex items-center space-x-3">
+            <div className="flex items-center space-x-2 text-stone-300">
+              <a
+                href={`tel:${primaryPhone.replace(/\s+/g, '')}`}
+                className="flex items-center space-x-1 hover:text-amber-400 transition-colors font-semibold"
+                title="Call Primary Phone"
+              >
+                <Phone className="w-3.5 h-3.5 text-amber-500" />
+                <span>{primaryPhone}</span>
+              </a>
+              <span className="text-stone-600">/</span>
+              <a
+                href={`tel:${secondaryPhone.replace(/\s+/g, '')}`}
+                className="hover:text-amber-400 transition-colors text-stone-300 font-medium"
+                title="Call Secondary Phone"
+              >
+                <span>{secondaryPhone}</span>
+              </a>
+            </div>
 
-            <div className="h-3 w-px bg-stone-700" />
+            <div className="h-3 w-px bg-stone-700 hidden sm:block" />
 
             {/* Staff / POS Login Button */}
             {isAuthenticated ? (
@@ -305,7 +361,7 @@ export const PublicStorefront: React.FC<PublicStorefrontProps> = ({
             {/* Action Buttons (Cart / WhatsApp) */}
             <div className="flex items-center space-x-3">
               <a
-                href={`https://wa.me/${waNumber}?text=${encodeURIComponent('Assalam o Alaikum Imtiaz Ali Sahib! I want to inquire about building materials, sanitary and paint prices.')}`}
+                href={`https://wa.me/${waNumber1}?text=${encodeURIComponent('Assalam o Alaikum Imtiaz Ali Sahib! I want to inquire about building materials, sanitary and paint prices.')}`}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="hidden sm:flex items-center space-x-1.5 px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition-colors shadow-xs"
@@ -394,7 +450,7 @@ export const PublicStorefront: React.FC<PublicStorefrontProps> = ({
                 </a>
 
                 <a
-                  href={`https://wa.me/${waNumber}?text=${encodeURIComponent('Assalam o Alaikum Imtiaz Ali Sahib! We have a construction project and need a bulk quotation for cement, sanitary and paints.')}`}
+                  href={`https://wa.me/${waNumber1}?text=${encodeURIComponent('Assalam o Alaikum Imtiaz Ali Sahib! We have a construction project and need a bulk quotation for cement, sanitary and paints.')}`}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold tracking-wide transition-all shadow-md flex items-center space-x-2"
@@ -420,15 +476,31 @@ export const PublicStorefront: React.FC<PublicStorefrontProps> = ({
               <div className="space-y-2.5 text-xs text-stone-300">
                 <div className="flex items-start space-x-2.5">
                   <MapPin className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-                  <span>{settings.address}</span>
+                  <div>
+                    <span className="font-semibold text-white block">{settings.address}</span>
+                    <span className="text-[11px] text-stone-400">Kumber, Lower Dir (Maidan), KPK</span>
+                  </div>
                 </div>
-                <div className="flex items-center space-x-2.5">
-                  <Phone className="w-4 h-4 text-emerald-400 shrink-0" />
-                  <span>{settings.phone}</span>
+                <div className="flex items-start space-x-2.5">
+                  <Phone className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                  <div className="flex flex-col space-y-0.5">
+                    <div className="flex items-center space-x-1.5">
+                      <a href={`tel:${primaryPhone.replace(/\s+/g, '')}`} className="font-bold text-emerald-300 hover:underline">
+                        {primaryPhone}
+                      </a>
+                      <span className="text-[10px] bg-emerald-950/70 text-emerald-300 px-1.5 py-0.2 rounded border border-emerald-700/50">Primary / WhatsApp</span>
+                    </div>
+                    <div className="flex items-center space-x-1.5 text-stone-300">
+                      <a href={`tel:${secondaryPhone.replace(/\s+/g, '')}`} className="hover:underline text-stone-200 font-medium">
+                        {secondaryPhone}
+                      </a>
+                      <span className="text-[10px] text-stone-400">Secondary</span>
+                    </div>
+                  </div>
                 </div>
                 <div className="flex items-center space-x-2.5">
                   <Clock className="w-4 h-4 text-blue-400 shrink-0" />
-                  <span>Mon - Sat: 8:00 AM – 8:30 PM (Friday break)</span>
+                  <span>Sat – Thu (Full Week Open): 8:00 AM – 8:30 PM • Friday OFF (Emergency Loading Available)</span>
                 </div>
               </div>
 
@@ -725,15 +797,24 @@ export const PublicStorefront: React.FC<PublicStorefrontProps> = ({
             </p>
           </div>
 
-          <a
-            href={`https://wa.me/${waNumber}?text=${encodeURIComponent('Assalam o Alaikum Imtiaz Ali Sahib! I am a contractor/builder and want to discuss bulk rates for an ongoing project.')}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="px-6 py-3 bg-white text-stone-900 hover:bg-amber-100 rounded-xl font-black text-xs uppercase tracking-wider shadow-lg transition-all shrink-0 flex items-center space-x-2"
-          >
-            <Phone className="w-4 h-4 text-amber-900" />
-            <span>Call Imtiaz Ali: {settings.phone}</span>
-          </a>
+          <div className="flex flex-col sm:flex-row items-center gap-3 shrink-0">
+            <a
+              href={`tel:${primaryPhone.replace(/\s+/g, '')}`}
+              className="w-full sm:w-auto px-5 py-3 bg-white text-stone-900 hover:bg-amber-100 rounded-xl font-black text-xs uppercase tracking-wider shadow-lg transition-all flex items-center justify-center space-x-2"
+              title="Call Primary Phone"
+            >
+              <Phone className="w-4 h-4 text-emerald-700" />
+              <span>Call: {primaryPhone}</span>
+            </a>
+            <a
+              href={`tel:${secondaryPhone.replace(/\s+/g, '')}`}
+              className="w-full sm:w-auto px-5 py-3 bg-amber-800 hover:bg-amber-700 text-white border border-amber-600 rounded-xl font-bold text-xs uppercase tracking-wider shadow-lg transition-all flex items-center justify-center space-x-2"
+              title="Call Secondary Phone"
+            >
+              <Phone className="w-4 h-4 text-amber-300" />
+              <span>Call: {secondaryPhone}</span>
+            </a>
+          </div>
         </div>
       </section>
 
@@ -746,11 +827,11 @@ export const PublicStorefront: React.FC<PublicStorefrontProps> = ({
               <MapPin className="w-5 h-5" />
             </div>
             <h4 className="font-bold text-stone-900 text-sm">Store Location</h4>
-            <p className="text-xs text-stone-600 leading-relaxed">
+            <p className="text-xs font-semibold text-stone-800 leading-relaxed">
               {settings.address}
             </p>
             <div className="pt-2 text-[11px] text-stone-500 font-medium">
-              Landmark: Main Building Materials Wholesale Bazaar. Suzuki and Mazda loading dock directly in front of the shop.
+              Landmark: Kumber Bazar, Main Road, Lower Dir, Maidan (KPK). Suzuki and Mazda loading facility available directly in front of the shop.
             </div>
           </div>
 
@@ -759,23 +840,22 @@ export const PublicStorefront: React.FC<PublicStorefrontProps> = ({
             <div className="w-10 h-10 rounded-xl bg-blue-100 text-blue-900 flex items-center justify-center">
               <Clock className="w-5 h-5" />
             </div>
-            <h4 className="font-bold text-stone-900 text-sm">Working Hours</h4>
-            <div className="space-y-1.5 text-xs text-stone-600">
-              <div className="flex justify-between">
-                <span>Monday – Thursday:</span>
-                <span className="font-bold text-stone-800">8:00 AM – 8:30 PM</span>
+            <h4 className="font-bold text-stone-900 text-sm">Working Hours & Schedule</h4>
+            <div className="space-y-2 text-xs text-stone-600">
+              <div className="flex justify-between items-center bg-emerald-50/70 p-2.5 rounded-lg border border-emerald-200/80">
+                <span className="font-semibold text-emerald-950">Saturday – Thursday (Whole Week):</span>
+                <span className="font-bold text-emerald-800 text-[12px]">8:00 AM – 8:30 PM (Open)</span>
               </div>
-              <div className="flex justify-between text-amber-900 font-medium">
-                <span>Friday:</span>
-                <span className="font-bold">8:00 AM – 8:30 PM (Break 1:00-2:30)</span>
+              <div className="flex justify-between items-center bg-red-50/80 p-2.5 rounded-lg border border-red-200">
+                <span className="font-semibold text-red-950">Friday (جمعہ المبارک):</span>
+                <span className="font-bold text-red-700 uppercase tracking-wide">Weekly OFF / Closed</span>
               </div>
-              <div className="flex justify-between">
-                <span>Saturday:</span>
-                <span className="font-bold text-stone-800">8:00 AM – 8:30 PM</span>
-              </div>
-              <div className="flex justify-between text-stone-400">
-                <span>Sunday:</span>
-                <span>Closed (Emergency Loading Available)</span>
+              <div className="p-2.5 bg-amber-50 rounded-lg border border-amber-200 text-amber-900 text-[11px] flex items-start space-x-2">
+                <span className="text-base leading-none">🚚</span>
+                <div>
+                  <span className="font-bold block text-amber-950">Friday Emergency Loading Available:</span>
+                  <span className="text-stone-700">Urgent Suzuki/Mazda loading and emergency material supply is available on call even on Friday.</span>
+                </div>
               </div>
             </div>
           </div>
@@ -789,23 +869,47 @@ export const PublicStorefront: React.FC<PublicStorefrontProps> = ({
             <p className="text-xs text-stone-600">
               For price inquiry, billing, and freight booking:
             </p>
-            <div className="space-y-1 text-xs">
-              <div className="font-bold text-stone-900">
-                Imtiaz Ali (Owner): <span className="text-amber-900">{settings.phone}</span>
+            <div className="space-y-2 text-xs">
+              <div className="p-2.5 bg-stone-50 rounded-lg border border-stone-200">
+                <div className="text-[10px] text-stone-500 font-bold uppercase">Primary Contact / WhatsApp</div>
+                <div className="flex items-center justify-between mt-1">
+                  <a href={`tel:${primaryPhone.replace(/\s+/g, '')}`} className="font-bold text-stone-900 hover:text-amber-700">
+                    {primaryPhone}
+                  </a>
+                  <a
+                    href={`https://wa.me/${waNumber1}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[11px] font-bold text-emerald-700 hover:underline flex items-center space-x-1"
+                  >
+                    <span>Chat</span>
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                </div>
               </div>
-              <div className="text-stone-600">
-                Email: <span className="font-mono text-stone-800">{settings.email}</span>
+
+              <div className="p-2.5 bg-stone-50 rounded-lg border border-stone-200">
+                <div className="text-[10px] text-stone-500 font-bold uppercase">Secondary Contact</div>
+                <div className="flex items-center justify-between mt-1">
+                  <a href={`tel:${secondaryPhone.replace(/\s+/g, '')}`} className="font-bold text-stone-900 hover:text-amber-700">
+                    {secondaryPhone}
+                  </a>
+                  <a
+                    href={`https://wa.me/${waNumber2}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[11px] font-bold text-emerald-700 hover:underline flex items-center space-x-1"
+                  >
+                    <span>Chat</span>
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                </div>
+              </div>
+
+              <div className="text-stone-600 pt-1">
+                Owner: <strong>{settings.owner_name || 'Imtiaz Ali'}</strong> • Email: <span className="font-mono text-stone-800">{settings.email}</span>
               </div>
             </div>
-            <a
-              href={`https://wa.me/${waNumber}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center space-x-1.5 text-xs font-bold text-emerald-700 hover:text-emerald-800 pt-1"
-            >
-              <span>Chat with Imtiaz Ali on WhatsApp</span>
-              <ExternalLink className="w-3.5 h-3.5" />
-            </a>
           </div>
         </div>
       </section>
@@ -988,6 +1092,20 @@ export const PublicStorefront: React.FC<PublicStorefrontProps> = ({
             {/* Drawer Footer: Total & WhatsApp Submit */}
             {cart.length > 0 && (
               <div className="p-4 border-t border-stone-200 bg-stone-50 space-y-3">
+                {inquirySuccessInfo && (
+                  <div className="p-3 bg-emerald-50 border border-emerald-300 rounded-xl text-emerald-950 flex items-start space-x-2.5">
+                    <CheckCircle className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+                    <div className="text-xs">
+                      <div className="font-bold">
+                        Estimate Saved #{inquirySuccessInfo.quotationNumber}!
+                      </div>
+                      <div className="text-emerald-800 text-[11px] mt-0.5">
+                        Your inquiry has been recorded in the store database and opened in WhatsApp for instant response.
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 <div className="flex items-baseline justify-between">
                   <span className="text-xs font-bold text-stone-600">Total Estimate Value:</span>
                   <span className="text-lg font-black text-stone-900">
@@ -998,14 +1116,19 @@ export const PublicStorefront: React.FC<PublicStorefrontProps> = ({
                 <button
                   type="button"
                   onClick={sendWhatsAppInquiry}
-                  className="w-full py-3 px-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-md flex items-center justify-center space-x-2"
+                  disabled={isSubmittingInquiry}
+                  className="w-full py-3 px-4 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition-all shadow-md flex items-center justify-center space-x-2"
                 >
                   <Send className="w-4 h-4" />
-                  <span>Send Estimate to Imtiaz Ali on WhatsApp</span>
+                  <span>
+                    {isSubmittingInquiry
+                      ? 'Saving Estimate to Store Database...'
+                      : 'Send Estimate to Imtiaz Ali on WhatsApp'}
+                  </span>
                 </button>
 
                 <p className="text-[11px] text-center text-stone-500">
-                  Clicking will open WhatsApp with your item list and project address ready to send!
+                  Automatically logged in store database & opens WhatsApp with your item list!
                 </p>
               </div>
             )}

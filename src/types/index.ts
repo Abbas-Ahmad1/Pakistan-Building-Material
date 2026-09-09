@@ -179,6 +179,8 @@ export interface StoreSettings {
   store_logo?: string;
   address: string;
   phone: string;
+  phone_primary?: string;
+  phone_secondary?: string;
   email: string;
   currency: string;
   invoice_prefix: string;
@@ -202,6 +204,35 @@ export interface SaleItem {
   discount: number;
   line_total: number;
   line_profit?: number;
+  returned_quantity?: number;
+  remaining_quantity?: number;
+}
+
+export interface SalesReturnItem {
+  id?: number;
+  return_id?: number;
+  sale_item_id: number;
+  product_id: number;
+  product_name?: string;
+  returned_quantity: number;
+  unit_price: number;
+  refund_line_total: number;
+}
+
+export interface SalesReturn {
+  id: number;
+  return_number: string;
+  sale_id: number;
+  customer_id: number;
+  total_refund_amount: number;
+  refund_type: 'CASH_REFUND' | 'LEDGER_ADJUSTMENT' | 'MIXED';
+  cash_refund_amount: number;
+  ledger_credit_amount: number;
+  reason?: string;
+  processed_by?: number;
+  processed_by_name?: string;
+  created_at: string;
+  items?: SalesReturnItem[];
 }
 
 export interface Sale {
@@ -222,12 +253,14 @@ export interface Sale {
   gross_profit?: number;
   paid_amount: number;
   due_amount: number;
+  returned_amount?: number;
   payment_method: string;
   payment_status: 'PAID' | 'PARTIAL' | 'DUE';
   cashier_id: number;
   cashier_name?: string;
   items_count?: number;
   items?: SaleItem[];
+  returns?: SalesReturn[];
   settings?: Record<string, string>;
 }
 

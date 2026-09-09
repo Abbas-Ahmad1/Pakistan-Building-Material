@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Search,
   ShoppingCart,
@@ -18,10 +18,15 @@ import {
   Layers,
   Sparkles,
   RefreshCw,
+  RotateCcw,
+  QrCode,
+  ScanLine,
 } from 'lucide-react';
 import { apiRequest } from '../services/api';
 import { Product, Customer, CartItem, Sale, Category } from '../types';
 import { ReceiptModal } from '../components/pos/ReceiptModal';
+import { InvoiceLookupModal } from '../components/pos/InvoiceLookupModal';
+import { BarcodeSvg } from '../components/common/BarcodeSvg';
 
 export const PosTerminal: React.FC = () => {
   // Products & Categories
@@ -55,6 +60,14 @@ export const PosTerminal: React.FC = () => {
   // Completed Invoice Modal
   const [completedSale, setCompletedSale] = useState<Sale | null>(null);
 
+  // Invoice Barcode Scanning & Verification Center State
+  const [showInvoiceLookupModal, setShowInvoiceLookupModal] = useState(false);
+  const [activeInvoiceForLookup, setActiveInvoiceForLookup] = useState<Sale | null>(null);
+  const [barcodeScanInput, setBarcodeScanInput] = useState('');
+  const [isScanningInvoice, setIsScanningInvoice] = useState(false);
+  const [recentInvoices, setRecentInvoices] = useState<{ id: number; invoice_number: string; payment_status: string }[]>([]);
+  const barcodeInputRef = useRef<HTMLInputElement>(null);
+
   // Fetch initial products, categories, customers
   const fetchData = async () => {
     setIsLoadingProducts(true);
@@ -73,6 +86,20 @@ export const PosTerminal: React.FC = () => {
         const walkIn = custRes.data.find((c) => c.is_walk_in);
         if (walkIn) setSelectedCustomerId(walkIn.id);
       }
+
+      // Also fetch recent invoices for quick lookup chips
+      try {
+        const salesRes = await apiRequest<Sale[]>('/api/sales?limit=5');
+        if (salesRes.success && salesRes.data) {
+          setRecentInvoices(
+            salesRes.data.map((s) => ({
+              id: s.id,
+              invoice_number: s.invoice_number,
+              payment_status: s.payment_status,
+            }))
+          );
+        }
+      } catch (_) {}
     } catch (err: any) {
       console.error('Error loading POS data:', err);
     } finally {
@@ -82,6 +109,45 @@ export const PosTerminal: React.FC = () => {
 
   useEffect(() => {
     fetchData();
+  }, []);
+
+  // Quick Barcode Scanning Handler for receipts
+  const handleScanInvoiceBarcode = async (inputCode?: string) => {
+    const code = (inputCode || barcodeScanInput).trim();
+    if (!code) {
+      setActiveInvoiceForLookup(null);
+      setShowInvoiceLookupModal(true);
+      return;
+    }
+
+    setIsScanningInvoice(true);
+    try {
+      const res = await apiRequest<Sale>(`/api/sales/lookup/${encodeURIComponent(code)}`);
+      if (res.success && res.data) {
+        setActiveInvoiceForLookup(res.data);
+      } else {
+        setActiveInvoiceForLookup(null);
+      }
+      setShowInvoiceLookupModal(true);
+      setBarcodeScanInput('');
+    } catch (err) {
+      setActiveInvoiceForLookup(null);
+      setShowInvoiceLookupModal(true);
+    } finally {
+      setIsScanningInvoice(false);
+    }
+  };
+
+  // Keyboard shortcut Ctrl+B or F2 to focus barcode scanner input
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey && e.key.toLowerCase() === 'b') || e.key === 'F2') {
+        e.preventDefault();
+        barcodeInputRef.current?.focus();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
   // Filtered Products
@@ -296,9 +362,88 @@ export const PosTerminal: React.FC = () => {
   };
 
   return (
-    <div className="flex-1 flex flex-col md:flex-row h-full overflow-hidden bg-stone-100">
-      {/* ================= LEFT COLUMN: PRODUCT SELECTION ================= */}
-      <div className="flex-1 flex flex-col min-w-0 border-r border-stone-200 bg-white">
+    <div className="flex-1 flex flex-col h-full overflow-hidden bg-stone-100">
+      {/* ================= TOP SCANNER & BILL VERIFICATION BAR ================= */}
+      <div className="bg-stone-900 text-white px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 border-b border-stone-800 shrink-0 shadow-md">
+        {/* Left: Barcode Gun / Input Field */}
+        <div className="flex items-center space-x-3 flex-1 min-w-[280px] max-w-2xl">
+          <div className="hidden sm:flex items-center space-x-1.5 px-2.5 py-1 bg-amber-500/10 border border-amber-500/30 rounded-lg text-[11px] font-bold text-amber-400 shrink-0">
+            <ScanLine className="w-3.5 h-3.5 animate-pulse text-amber-400" />
+            <span>Barcode Gun Ready</span>
+          </div>
+
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              handleScanInvoiceBarcode();
+            }}
+            className="flex-1 flex items-center space-x-1.5"
+          >
+            <div className="relative flex-1">
+              <input
+                ref={barcodeInputRef}
+                type="text"
+                placeholder="Scan Receipt Barcode with scanner gun OR enter Invoice # (Ctrl+B)..."
+                value={barcodeScanInput}
+                onChange={(e) => setBarcodeScanInput(e.target.value)}
+                className="w-full pl-8 pr-3 py-1.5 bg-stone-800/90 border border-stone-700 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 rounded-lg text-xs text-white placeholder-stone-400 font-medium"
+              />
+              <QrCode className="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-amber-400/80" />
+            </div>
+
+            <button
+              type="submit"
+              disabled={isScanningInvoice}
+              className="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white rounded-lg text-xs font-bold shrink-0 transition-colors shadow-xs flex items-center space-x-1"
+            >
+              <Search className="w-3.5 h-3.5" />
+              <span>{isScanningInvoice ? 'Looking up...' : 'Verify Bill'}</span>
+            </button>
+          </form>
+        </div>
+
+        {/* Right: Quick Action Buttons & Recent Invoices */}
+        <div className="flex items-center space-x-2">
+          {recentInvoices.length > 0 && (
+            <div className="hidden xl:flex items-center space-x-1.5 mr-2">
+              <span className="text-[10px] uppercase font-bold text-stone-400">Recent Bills:</span>
+              {recentInvoices.slice(0, 3).map((rec) => (
+                <button
+                  key={rec.id}
+                  type="button"
+                  onClick={() => handleScanInvoiceBarcode(rec.invoice_number)}
+                  className="px-2 py-0.5 bg-stone-800 hover:bg-stone-700 border border-stone-700 rounded text-[10px] font-mono font-medium text-stone-300 hover:text-white flex items-center space-x-1 transition-colors"
+                  title={`Quick verify ${rec.invoice_number}`}
+                >
+                  <span>{rec.invoice_number}</span>
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full ${
+                      rec.payment_status === 'PAID' ? 'bg-emerald-400' : 'bg-rose-400'
+                    }`}
+                  />
+                </button>
+              ))}
+            </div>
+          )}
+
+          <button
+            type="button"
+            onClick={() => {
+              setActiveInvoiceForLookup(null);
+              setShowInvoiceLookupModal(true);
+            }}
+            className="px-3 py-1.5 bg-stone-800 hover:bg-stone-700 text-stone-200 hover:text-white rounded-lg text-xs font-bold border border-stone-700 flex items-center space-x-1.5 transition-colors"
+          >
+            <RotateCcw className="w-3.5 h-3.5 text-rose-400" />
+            <span>Return Items & Restock</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Main POS Interface Columns */}
+      <div className="flex-1 flex flex-col md:flex-row min-h-0 overflow-hidden">
+        {/* ================= LEFT COLUMN: PRODUCT SELECTION ================= */}
+        <div className="flex-1 flex flex-col min-w-0 border-r border-stone-200 bg-white">
         {/* Top Controls: Search Bar & Refresh */}
         <div className="p-4 border-b border-stone-200 flex items-center space-x-3 bg-stone-50/50">
           <div className="relative flex-1">
@@ -773,6 +918,21 @@ export const PosTerminal: React.FC = () => {
           onClose={() => setCompletedSale(null)}
         />
       )}
+
+      {/* ================= MODAL: INVOICE BARCODE LOOKUP, QUICK PAY & SALES RETURN ================= */}
+      {showInvoiceLookupModal && (
+        <InvoiceLookupModal
+          initialSale={activeInvoiceForLookup}
+          onClose={() => {
+            setShowInvoiceLookupModal(false);
+            setActiveInvoiceForLookup(null);
+          }}
+          onInvoiceUpdated={(updatedSale) => {
+            fetchData();
+          }}
+        />
+      )}
+      </div>
     </div>
   );
 };

@@ -10,15 +10,23 @@ import {
   Bell,
   Clock,
   Globe,
+  Menu,
+  PanelLeftClose,
 } from 'lucide-react';
 
 interface NavbarProps {
   onToggleSidebar?: () => void;
+  isSidebarOpen?: boolean;
   activeView: string;
   onViewWebsite?: () => void;
 }
 
-export const Navbar: React.FC<NavbarProps> = ({ activeView, onViewWebsite }) => {
+export const Navbar: React.FC<NavbarProps> = ({
+  activeView,
+  onViewWebsite,
+  onToggleSidebar,
+  isSidebarOpen,
+}) => {
   const { user, logout, switchUserRole } = useAuth();
   const { settings } = useSettings();
   const [time, setTime] = useState<string>('');
@@ -41,16 +49,39 @@ export const Navbar: React.FC<NavbarProps> = ({ activeView, onViewWebsite }) => 
   }, []);
 
   return (
-    <header className="h-16 bg-white border-b border-stone-200 px-6 flex items-center justify-between sticky top-0 z-20 shadow-xs">
-      {/* Left: View Title & Store Name */}
-      <div className="flex items-center space-x-4">
+    <header className="h-16 bg-white border-b border-stone-200 px-4 sm:px-6 flex items-center justify-between sticky top-0 z-20 shadow-xs">
+      {/* Left: Sidebar Toggle, View Title & Store Name */}
+      <div className="flex items-center space-x-3 sm:space-x-4">
+        {onToggleSidebar && (
+          <button
+            type="button"
+            onClick={onToggleSidebar}
+            className={`flex items-center space-x-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-bold transition-all shadow-2xs ${
+              isSidebarOpen
+                ? 'bg-stone-100 hover:bg-stone-200 text-stone-700 border-stone-300'
+                : 'bg-amber-50 hover:bg-amber-100 text-amber-900 border-amber-300'
+            }`}
+            title={isSidebarOpen ? 'Hide Sidebar Menu' : 'Show Sidebar Menu'}
+            aria-label="Toggle Navigation Menu"
+          >
+            {isSidebarOpen ? (
+              <PanelLeftClose className="w-4 h-4 text-stone-700" />
+            ) : (
+              <Menu className="w-4 h-4 text-amber-700" />
+            )}
+            <span className="hidden sm:inline">
+              {isSidebarOpen ? 'Hide Menu' : 'Menu'}
+            </span>
+          </button>
+        )}
+
         <div className="flex items-center space-x-2 text-stone-800">
           <Store className="w-5 h-5 text-amber-700" />
-          <span className="font-semibold text-sm tracking-tight text-stone-900 hidden sm:inline">
+          <span className="font-semibold text-sm tracking-tight text-stone-900 hidden md:inline">
             {settings.store_name}
           </span>
         </div>
-        <span className="text-stone-300">|</span>
+        <span className="text-stone-300 hidden sm:inline">|</span>
         <span className="text-xs font-medium uppercase tracking-wider text-stone-500 bg-stone-100 px-2.5 py-1 rounded-md">
           {activeView.replace('-', ' ')}
         </span>

@@ -1,6 +1,8 @@
 {
   "name": "Pakistan Building Materials & Paint Store",
-  "description": "Official website and online catalog for Pakistan Building Materials & Paint Store owned by Imtiaz Ali. Quality paints, bathroom sanitary, pipes, hardware & construction materials with wholesale and retail rates.",
+  "description": "Official website and catalog for Pakistan Building Materials & Paint Store owned by Imtiaz Ali. Quality paints, bathroom sanitary, pipes, hardware & building materials at Kumber Bazar Lower Dir Maidan.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }

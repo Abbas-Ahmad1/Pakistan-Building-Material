@@ -289,7 +289,46 @@ export function initDatabase() {
       FOREIGN KEY (quotation_id) REFERENCES quotations(id) ON DELETE CASCADE,
       FOREIGN KEY (product_id) REFERENCES products(id)
     );
+
+    CREATE TABLE IF NOT EXISTS sales_returns (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      return_number TEXT UNIQUE NOT NULL,
+      sale_id INTEGER NOT NULL,
+      customer_id INTEGER NOT NULL,
+      total_refund_amount REAL NOT NULL,
+      refund_type TEXT CHECK(refund_type IN ('CASH_REFUND', 'LEDGER_ADJUSTMENT', 'MIXED')) NOT NULL,
+      cash_refund_amount REAL DEFAULT 0.00,
+      ledger_credit_amount REAL DEFAULT 0.00,
+      reason TEXT,
+      processed_by INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (sale_id) REFERENCES sales(id),
+      FOREIGN KEY (customer_id) REFERENCES customers(id),
+      FOREIGN KEY (processed_by) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS sales_return_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      return_id INTEGER NOT NULL,
+      sale_item_id INTEGER NOT NULL,
+      product_id INTEGER NOT NULL,
+      returned_quantity REAL NOT NULL,
+      unit_price REAL NOT NULL,
+      refund_line_total REAL NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (return_id) REFERENCES sales_returns(id) ON DELETE CASCADE,
+      FOREIGN KEY (sale_item_id) REFERENCES sale_items(id),
+      FOREIGN KEY (product_id) REFERENCES products(id)
+    );
   `);
+
+  // Column migrations for item returns
+  try {
+    db.exec('ALTER TABLE sale_items ADD COLUMN returned_quantity REAL DEFAULT 0.00;');
+  } catch (_) {}
+  try {
+    db.exec('ALTER TABLE sales ADD COLUMN returned_amount REAL DEFAULT 0.00;');
+  } catch (_) {}
 
   seedInitialData();
 
@@ -298,7 +337,13 @@ export function initDatabase() {
     db.prepare(`UPDATE settings SET value = 'Pakistan Building Materials & paint store' WHERE key = 'store_name'`).run();
     db.prepare(`UPDATE settings SET value = 'sales@pakistanmaterials.pk' WHERE key = 'email' AND value = 'sales@almadinahardware.com'`).run();
     db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('owner_name', 'Imtiaz Ali')`).run();
+    db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('address', 'Kumber Bazar Lower Dir Maidan')`).run();
+    db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('phone', '+92 300 5936652 / +92 305 9632244')`).run();
+    db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('phone_primary', '+92 300 5936652')`).run();
+    db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('phone_secondary', '+92 305 9632244')`).run();
     db.prepare(`UPDATE users SET name = 'Imtiaz Ali (Owner)', email = 'imtiaz@pakistanmaterials.pk' WHERE username = 'admin'`).run();
+    db.prepare(`UPDATE users SET name = 'Majid Mashwani (Cashier)', email = 'majid@pakistanmaterials.pk' WHERE username = 'cashier'`).run();
+    db.prepare(`UPDATE sales SET cashier_name = 'Majid Mashwani' WHERE cashier_name LIKE '%Ali Raza%'`).run();
 
     // Check if Paints category exists, if not add it
     const paintCat = db.prepare(`SELECT id FROM categories WHERE code = 'CAT-PNT' OR name LIKE '%Paint%'`).get() as any;
@@ -359,14 +404,16 @@ function seedInitialData() {
 
   const insertUser = db.prepare('INSERT INTO users (name, username, email, password_hash, role_id, status) VALUES (?, ?, ?, ?, ?, ?)');
   insertUser.run('Imtiaz Ali (Owner)', 'admin', 'imtiaz@pakistanmaterials.pk', adminHash, 1, 'active');
-  insertUser.run('Ali Raza (Head Cashier)', 'cashier', 'pos@hardwarestore.pk', cashierHash, 2, 'active');
+  insertUser.run('Majid Mashwani (Cashier)', 'cashier', 'majid@pakistanmaterials.pk', cashierHash, 2, 'active');
 
   // 3. Settings
   const insertSetting = db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)');
   insertSetting.run('store_name', 'Pakistan Building Materials & paint store');
   insertSetting.run('owner_name', 'Imtiaz Ali');
-  insertSetting.run('address', 'Main Wholesale Market, Building Materials Boulevard, Shop #14-18');
-  insertSetting.run('phone', '+92 300 1234567 / +92 42 3578901');
+  insertSetting.run('address', 'Kumber Bazar Lower Dir Maidan');
+  insertSetting.run('phone', '+92 300 5936652 / +92 305 9632244');
+  insertSetting.run('phone_primary', '+92 300 5936652');
+  insertSetting.run('phone_secondary', '+92 305 9632244');
   insertSetting.run('email', 'sales@pakistanmaterials.pk');
   insertSetting.run('currency', 'Rs.');
   insertSetting.run('invoice_prefix', 'INV-');

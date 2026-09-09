@@ -53,14 +53,16 @@ authRouter.post('/login', (req: Request, res: Response): any => {
     if (!user) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid credentials. Please check your username and password.',
+        errorType: 'INVALID_USERNAME',
+        message: 'Incorrect Username! This username does not exist in the system. Please check your username and try again.',
       });
     }
 
     if (user.status !== 'active') {
       return res.status(403).json({
         success: false,
-        message: 'Your account is deactivated. Please contact the administrator.',
+        errorType: 'ACCOUNT_DEACTIVATED',
+        message: 'Account Deactivated! Your account is currently disabled. Please contact the administrator.',
       });
     }
 
@@ -68,7 +70,8 @@ authRouter.post('/login', (req: Request, res: Response): any => {
     if (!isMatch) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid credentials. Please check your username and password.',
+        errorType: 'INVALID_PASSWORD',
+        message: 'Incorrect Password! The password you entered is incorrect. Please verify and try again.',
       });
     }
 
@@ -192,4 +195,90 @@ authRouter.get('/users', (req: Request, res: Response): any => {
     .all();
 
   return res.json({ success: true, data: users });
+});
+
+// POST /api/auth/update-credentials (ADMIN only)
+authRouter.post('/update-credentials', (req: Request, res: Response): any => {
+  try {
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : undefined;
+    const session = verifySession(token);
+
+    if (!session || session.role !== 'ADMIN') {
+      return res.status(403).json({ success: false, message: 'Access denied. Administrator privileges required.' });
+    }
+
+    const { userId, name, username, email, password } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ success: false, message: 'User ID is required.' });
+    }
+
+    const existingUser = db.prepare('SELECT id, name, username, email, role_id FROM users WHERE id = ?').get(userId) as any;
+    if (!existingUser) {
+      return res.status(404).json({ success: false, message: 'User not found in database.' });
+    }
+
+    // Check if new username is already taken by another account
+    if (username && username.trim() !== existingUser.username) {
+      const duplicate = db.prepare('SELECT id FROM users WHERE LOWER(username) = LOWER(?) AND id != ?').get(username.trim(), userId);
+      if (duplicate) {
+        return res.status(400).json({ success: false, message: `Username "${username}" is already taken by another user.` });
+      }
+    }
+
+    let passwordHash: string | null = null;
+    if (password && typeof password === 'string' && password.trim().length > 0) {
+      if (password.trim().length < 4) {
+        return res.status(400).json({ success: false, message: 'New password must be at least 4 characters long.' });
+      }
+      passwordHash = bcrypt.hashSync(password.trim(), 10);
+    }
+
+    const newName = name ? name.trim() : existingUser.name;
+    const newUsername = username ? username.trim() : existingUser.username;
+    const newEmail = email ? email.trim() : existingUser.email;
+
+    if (passwordHash) {
+      db.prepare(`
+        UPDATE users
+        SET name = ?, username = ?, email = ?, password_hash = ?
+        WHERE id = ?
+      `).run(newName, newUsername, newEmail, passwordHash, userId);
+    } else {
+      db.prepare(`
+        UPDATE users
+        SET name = ?, username = ?, email = ?
+        WHERE id = ?
+      `).run(newName, newUsername, newEmail, userId);
+    }
+
+    // Record in audit log
+    db.prepare(`
+      INSERT INTO audit_logs (user_id, action, module, record_id, details)
+      VALUES (?, 'CREDENTIALS_UPDATED', 'Auth', ?, ?)
+    `).run(
+      session.userId,
+      userId,
+      `Updated user account (${newUsername}, role_id: ${existingUser.role_id})${passwordHash ? ' with new password' : ''}`
+    );
+
+    return res.json({
+      success: true,
+      message: `Credentials for ${newUsername} updated successfully!`,
+      data: {
+        id: userId,
+        name: newName,
+        username: newUsername,
+        email: newEmail,
+        passwordUpdated: !!passwordHash,
+      },
+    });
+  } catch (error: any) {
+    console.error('Update credentials error:', error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || 'An error occurred while updating user credentials.',
+    });
+  }
 });

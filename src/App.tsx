@@ -32,6 +32,8 @@ const MainLayout: React.FC = () => {
   const [currentView, setCurrentView] = useState<string>('dashboard');
   const [showStaffLogin, setShowStaffLogin] = useState<boolean>(false);
   const [isViewingPublicWebsite, setIsViewingPublicWebsite] = useState<boolean>(false);
+  const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false);
+  const [isSidebarPinned, setIsSidebarPinned] = useState<boolean>(false);
 
   if (isLoading) {
     return (
@@ -146,12 +148,21 @@ const MainLayout: React.FC = () => {
   };
 
   return (
-    <div className="flex h-screen w-full bg-stone-100 text-stone-900 font-sans overflow-hidden">
+    <div className="flex h-screen w-full bg-stone-100 text-stone-900 font-sans overflow-hidden relative">
       {/* Sidebar Navigation */}
       <Sidebar
         currentView={currentView}
-        onSelectView={setCurrentView}
+        onSelectView={(view) => {
+          setCurrentView(view);
+          if (!isSidebarPinned) {
+            setIsSidebarOpen(false);
+          }
+        }}
         onViewWebsite={() => setIsViewingPublicWebsite(true)}
+        isOpen={isSidebarOpen}
+        onClose={() => setIsSidebarOpen(false)}
+        isPinned={isSidebarPinned}
+        onTogglePin={() => setIsSidebarPinned(!isSidebarPinned)}
       />
 
       {/* Main Content Area */}
@@ -159,6 +170,8 @@ const MainLayout: React.FC = () => {
         <Navbar
           activeView={currentView}
           onViewWebsite={() => setIsViewingPublicWebsite(true)}
+          onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
+          isSidebarOpen={isSidebarOpen}
         />
         <main className="flex-1 flex flex-col overflow-hidden">
           {renderCurrentView()}

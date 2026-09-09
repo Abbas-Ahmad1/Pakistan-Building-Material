@@ -16,10 +16,13 @@ import {
   DollarSign,
   ArrowUpDown,
   RefreshCw,
+  RotateCcw,
+  ScanLine,
 } from 'lucide-react';
 import { apiRequest } from '../services/api';
 import { Sale } from '../types';
 import { ReceiptModal } from '../components/pos/ReceiptModal';
+import { InvoiceLookupModal } from '../components/pos/InvoiceLookupModal';
 import { useAuth } from '../context/AuthContext';
 
 export const SalesRegister: React.FC = () => {
@@ -47,6 +50,10 @@ export const SalesRegister: React.FC = () => {
   // Selected sale for receipt preview
   const [selectedSaleForModal, setSelectedSaleForModal] = useState<Sale | null>(null);
   const [isLoadingInvoiceDetails, setIsLoadingInvoiceDetails] = useState(false);
+
+  // Invoice Lookup & Return Modal
+  const [selectedSaleForLookup, setSelectedSaleForLookup] = useState<Sale | null>(null);
+  const [showLookupModal, setShowLookupModal] = useState(false);
 
   const fetchSales = async () => {
     setIsLoading(true);
@@ -104,14 +111,28 @@ export const SalesRegister: React.FC = () => {
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={fetchSales}
-          className="inline-flex items-center space-x-1.5 px-3 py-2 bg-white border border-stone-200 rounded-lg text-xs font-semibold text-stone-700 hover:bg-stone-100 shadow-xs transition-colors self-start sm:self-auto"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
-          <span>Refresh Invoices</span>
-        </button>
+        <div className="flex items-center space-x-2 self-start sm:self-auto">
+          <button
+            type="button"
+            onClick={() => {
+              setSelectedSaleForLookup(null);
+              setShowLookupModal(true);
+            }}
+            className="inline-flex items-center space-x-1.5 px-3 py-2 bg-amber-600 hover:bg-amber-700 rounded-lg text-xs font-bold text-white shadow-xs transition-colors"
+          >
+            <ScanLine className="w-3.5 h-3.5" />
+            <span>Scan Invoice / Returns</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={fetchSales}
+            className="inline-flex items-center space-x-1.5 px-3 py-2 bg-white border border-stone-200 rounded-lg text-xs font-semibold text-stone-700 hover:bg-stone-100 shadow-xs transition-colors"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
+            <span>Refresh</span>
+          </button>
+        </div>
       </div>
 
       {/* Summary KPI Cards */}
@@ -303,15 +324,30 @@ export const SalesRegister: React.FC = () => {
                     </td>
 
                     <td className="py-3 px-4 text-center">
-                      <button
-                        type="button"
-                        onClick={() => openInvoiceReceipt(sale.id)}
-                        className="p-1.5 bg-stone-100 hover:bg-stone-200 text-stone-700 hover:text-stone-900 rounded-lg transition-colors inline-flex items-center space-x-1"
-                        title="View & Print Bill"
-                      >
-                        <Printer className="w-3.5 h-3.5" />
-                        <span className="text-[10px] font-bold">Print</span>
-                      </button>
+                      <div className="flex items-center justify-center space-x-1.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedSaleForLookup(sale);
+                            setShowLookupModal(true);
+                          }}
+                          className="p-1.5 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-lg transition-colors inline-flex items-center space-x-1"
+                          title="Scan Barcode / Settle Payment / Return Items"
+                        >
+                          <RotateCcw className="w-3.5 h-3.5" />
+                          <span className="text-[10px] font-bold">Manage / Return</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => openInvoiceReceipt(sale.id)}
+                          className="p-1.5 bg-stone-100 hover:bg-stone-200 text-stone-700 hover:text-stone-900 rounded-lg transition-colors inline-flex items-center space-x-1"
+                          title="View & Print Bill"
+                        >
+                          <Printer className="w-3.5 h-3.5" />
+                          <span className="text-[10px] font-bold">Print</span>
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))
@@ -326,6 +362,20 @@ export const SalesRegister: React.FC = () => {
         <ReceiptModal
           sale={selectedSaleForModal}
           onClose={() => setSelectedSaleForModal(null)}
+        />
+      )}
+
+      {/* Invoice Barcode Lookup, Quick Settle & Returns Center Modal */}
+      {showLookupModal && (
+        <InvoiceLookupModal
+          initialSale={selectedSaleForLookup}
+          onClose={() => {
+            setShowLookupModal(false);
+            setSelectedSaleForLookup(null);
+          }}
+          onInvoiceUpdated={() => {
+            fetchSales();
+          }}
         />
       )}
     </div>

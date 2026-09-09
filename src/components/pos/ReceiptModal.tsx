@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
-import { Printer, X, FileText, CheckCircle2 } from 'lucide-react';
+import { Printer, X, FileText, CheckCircle2, QrCode } from 'lucide-react';
 import { Sale } from '../../types';
+import { BarcodeSvg } from '../common/BarcodeSvg';
+import { QrCodeSvg } from '../common/QrCodeSvg';
 
 interface ReceiptModalProps {
   sale: Sale;
@@ -97,6 +99,13 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({ sale, onClose }) => 
                 </p>
                 <div className="inline-block mt-1 px-2 py-0.5 bg-stone-900 text-white text-[10px] font-bold rounded uppercase">
                   Cash Memo / Sales Invoice
+                </div>
+                {/* Top Receipt Barcode */}
+                <div className="pt-2 flex flex-col items-center">
+                  <BarcodeSvg value={sale.invoice_number} width={180} height={42} showText={false} />
+                  <span className="text-[9px] font-bold tracking-wider text-stone-700 mt-0.5">
+                    *{sale.invoice_number}*
+                  </span>
                 </div>
               </div>
 
@@ -206,6 +215,20 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({ sale, onClose }) => 
                 )}
               </div>
 
+              {/* Barcode & QR Code Section at Bottom of Receipt */}
+              <div className="py-3 border-b border-dashed border-stone-400 flex flex-col items-center space-y-2">
+                <div className="flex items-center space-x-3">
+                  <QrCodeSvg value={`INVOICE:${sale.invoice_number}|AMT:${sale.grand_total}|DUE:${sale.due_amount}`} size={64} label="VERIFY BILL" />
+                  <div className="text-[9px] text-stone-600 text-left font-sans leading-tight max-w-[170px]">
+                    <p className="font-bold text-stone-800">DIGITAL RECEIPT VERIFIED</p>
+                    <p>Scan barcode with cashier scanner gun to pull up bill, settle pending Khata, or process item returns.</p>
+                  </div>
+                </div>
+                <div className="pt-1 flex flex-col items-center">
+                  <BarcodeSvg value={sale.invoice_number} width={190} height={42} showText={true} />
+                </div>
+              </div>
+
               {/* Footer Notice */}
               <div className="pt-3 text-center text-[9px] text-stone-600 font-sans space-y-1">
                 <p className="italic">{settings.invoice_footer}</p>
@@ -239,6 +262,9 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({ sale, onClose }) => 
                     <div className="font-bold text-stone-900 text-sm">{sale.invoice_number}</div>
                     <div className="text-stone-500">
                       Date: {new Date(sale.sale_date).toLocaleDateString('en-PK')}
+                    </div>
+                    <div className="mt-1 flex justify-end">
+                      <BarcodeSvg value={sale.invoice_number} width={150} height={36} showText={false} />
                     </div>
                   </div>
                 </div>
@@ -321,6 +347,17 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({ sale, onClose }) => 
                   <div className="p-3 bg-stone-50 rounded-lg border border-stone-200">
                     <span className="font-bold text-stone-800 block text-[11px] mb-1">TERMS & CONDITIONS:</span>
                     <p className="text-[10px] text-stone-600">{settings.invoice_footer}</p>
+                  </div>
+
+                  <div className="p-2.5 bg-stone-50/80 rounded-lg border border-stone-200 flex items-center space-x-3">
+                    <QrCodeSvg value={`INVOICE:${sale.invoice_number}|AMT:${sale.grand_total}|DUE:${sale.due_amount}`} size={56} label="BILL QR" />
+                    <div className="text-[10px] text-stone-600 font-sans leading-tight">
+                      <p className="font-bold text-stone-800">ELECTRONIC VERIFICATION</p>
+                      <p className="text-[9px] text-stone-500 mt-0.5">Scan this QR or barcode at any POS terminal for instant bill lookup, payment clearance, or item returns.</p>
+                      <div className="mt-1">
+                        <BarcodeSvg value={sale.invoice_number} width={130} height={28} showText={false} />
+                      </div>
+                    </div>
                   </div>
                 </div>
 
