@@ -164,7 +164,7 @@ export const PublicStorefront: React.FC<PublicStorefrontProps> = ({
 
   // Phone numbers configuration
   const primaryPhone = settings.phone_primary || '+92 300 5936652';
-  const secondaryPhone = settings.phone_secondary || '+92 305 9632244';
+  const secondaryPhone = settings.phone_secondary || '+92 300 1801818';
 
   const cleanPhone = (num: string) => {
     const digits = (num || '').replace(/[^0-9]/g, '');

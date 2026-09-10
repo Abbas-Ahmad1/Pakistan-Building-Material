@@ -7,6 +7,9 @@ export interface User {
   email: string;
   role: Role;
   status: 'active' | 'inactive';
+  branch_id?: number;
+  branch_name?: string;
+  branch_code?: string;
   created_at?: string;
 }
 
@@ -124,6 +127,8 @@ export interface Supplier {
   total_purchases: number;
   paid_amount: number;
   payable_balance: number;
+  status?: string;
+  purchases_count?: number;
   created_at: string;
 }
 
@@ -198,7 +203,9 @@ export interface SaleItem {
   product_name?: string;
   sku?: string;
   unit?: string;
-  quantity: number;
+  quantity: number; // Total Purchased Quantity
+  delivered_quantity?: number; // Delivered / Picked Up quantity
+  remaining_delivery?: number; // Remaining Balance = quantity - delivered_quantity
   unit_cost?: number;
   unit_price: number;
   discount: number;
@@ -206,6 +213,20 @@ export interface SaleItem {
   line_profit?: number;
   returned_quantity?: number;
   remaining_quantity?: number;
+}
+
+export interface SaleDeliveryLog {
+  id: number;
+  sale_id: number;
+  sale_item_id: number;
+  product_name?: string;
+  delivered_quantity: number;
+  total_delivered_after: number;
+  remaining_after: number;
+  notes?: string;
+  delivered_by?: number;
+  delivered_by_name?: string;
+  created_at: string;
 }
 
 export interface SalesReturnItem {
@@ -249,6 +270,8 @@ export interface Sale {
   tax_amount: number;
   discount_amount: number;
   grand_total: number;
+  original_grand_total?: number;
+  net_total?: number;
   cogs_total?: number;
   gross_profit?: number;
   paid_amount: number;
@@ -256,17 +279,140 @@ export interface Sale {
   returned_amount?: number;
   payment_method: string;
   payment_status: 'PAID' | 'PARTIAL' | 'DUE';
+  delivery_status?: 'DELIVERED' | 'PARTIAL' | 'PENDING';
+  total_purchased_qty?: number;
+  total_delivered_qty?: number;
+  total_remaining_qty?: number;
   cashier_id: number;
   cashier_name?: string;
+  branch_id?: number;
+  branch_name?: string;
+  branch_code?: string;
+  branch_address?: string;
+  branch_phone?: string;
   items_count?: number;
   items?: SaleItem[];
   returns?: SalesReturn[];
+  delivery_logs?: SaleDeliveryLog[];
   settings?: Record<string, string>;
+}
+
+export interface Branch {
+  id: number;
+  name: string;
+  code: string;
+  address?: string;
+  phone?: string;
+  manager_name?: string;
+  is_main: number | boolean;
+  status: 'ACTIVE' | 'INACTIVE';
+  total_products?: number;
+  total_units?: number;
+  sales_count?: number;
+  total_revenue?: number;
+  created_at?: string;
+}
+
+export interface BranchStockBreakdown {
+  branch_id: number;
+  branch_name: string;
+  branch_code: string;
+  current_stock: number;
+  minimum_stock: number;
+}
+
+export interface ProductBranchStockMatrix {
+  id: number;
+  sku: string;
+  barcode: string;
+  name: string;
+  brand: string;
+  unit: string;
+  category_name?: string;
+  purchase_price: number;
+  selling_price: number;
+  total_stock: number;
+  minimum_stock: number;
+  branches: BranchStockBreakdown[];
+}
+
+export interface StockTransferItem {
+  id?: number;
+  transfer_id?: number;
+  product_id: number;
+  product_name?: string;
+  sku?: string;
+  unit?: string;
+  quantity: number;
+}
+
+export interface StockTransfer {
+  id: number;
+  transfer_number: string;
+  transfer_date: string;
+  from_branch_id: number;
+  from_branch_name: string;
+  from_branch_code: string;
+  to_branch_id: number;
+  to_branch_name: string;
+  to_branch_code: string;
+  status: 'COMPLETED' | 'PENDING' | 'CANCELLED';
+  notes?: string;
+  created_by_name?: string;
+  items_count?: number;
+  total_quantity?: number;
+  items?: StockTransferItem[];
+  created_at: string;
+}
+
+export interface BranchPerformanceSummary {
+  branch_id: number;
+  branch_name: string;
+  branch_code: string;
+  is_main: boolean;
+  address?: string;
+  today: { orders: number; revenue: number; paid: number; due: number };
+  weekly: { orders: number; revenue: number };
+  monthly: { orders: number; revenue: number };
+  all_time: { orders: number; revenue: number; paid: number; due: number };
+  inventory: {
+    total_products: number;
+    total_units: number;
+    total_cost_value: number;
+    total_retail_value: number;
+    out_of_stock: number;
+    low_stock: number;
+  };
+}
+
+export interface CashierCollectionRow {
+  cashier_id: number;
+  cashier_name: string;
+  branch_id: number;
+  branch_name: string;
+  branch_code: string;
+  invoices_count: number;
+  total_billed: number;
+  cash_collected: number;
+  bank_card_collected: number;
+  total_collected: number;
+  total_due: number;
+  returns_count: number;
+  total_refund: number;
+  cash_refund: number;
+  net_cash_in_hand: number;
+}
+
+export interface BranchAnalyticsData {
+  date: string;
+  branch_performance: BranchPerformanceSummary[];
+  cashier_collections: CashierCollectionRow[];
 }
 
 export interface CartItem {
   product: Product;
   quantity: number;
+  delivered_quantity: number;
   unitPrice: number;
   priceTier: 'retail' | 'wholesale';
   discount: number;
@@ -297,5 +443,62 @@ export interface CustomerLedgerEntry {
   payment_method?: string;
   notes?: string;
   type: 'INVOICE' | 'PAYMENT';
+}
+
+export interface DrawerExpense {
+  id: number;
+  shift_id: number;
+  branch_id: number;
+  cashier_id: number;
+  cashier_name: string;
+  category: string;
+  amount: number;
+  note: string;
+  paid_to?: string;
+  created_at: string;
+  recorded_by_name?: string;
+}
+
+export interface ShiftRunningMetrics {
+  opening_balance: number;
+  cash_sales: number;
+  other_sales: number;
+  total_revenue: number;
+  cash_refunds: number;
+  total_expenses: number;
+  expected_closing_cash: number;
+  sales_count: number;
+  credit_issued?: number;
+}
+
+export interface CashDrawerShift {
+  id: number;
+  shift_code: string;
+  branch_id: number;
+  branch_name?: string;
+  branch_code?: string;
+  branch_address?: string;
+  branch_phone?: string;
+  cashier_id: number;
+  cashier_name: string;
+  cashier_full_name?: string;
+  opened_at: string;
+  closed_at?: string | null;
+  status: 'OPEN' | 'CLOSED';
+  opening_balance: number;
+  cash_sales_amount: number;
+  other_sales_amount: number;
+  total_sales_amount: number;
+  cash_refunds_amount: number;
+  drawer_expenses_amount: number;
+  expected_closing_cash: number;
+  actual_closing_cash?: number | null;
+  cash_difference?: number | null;
+  closing_notes?: string | null;
+  created_at?: string;
+  runningMetrics?: ShiftRunningMetrics;
+  expenses?: DrawerExpense[];
+  sales_count?: number;
+  credit_issued?: number;
 }
 

@@ -24,6 +24,7 @@ import {
   Receipt,
   ShoppingCart,
   Calendar,
+  Building2,
 } from 'lucide-react';
 
 interface DashboardProps {
@@ -94,6 +95,17 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
           >
             <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin text-amber-700' : ''}`} />
           </button>
+
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={() => onNavigate('branches')}
+              className="flex items-center space-x-1.5 px-3 py-2 bg-stone-900 hover:bg-stone-800 text-white rounded-lg text-xs font-semibold shadow-xs transition-colors"
+            >
+              <Building2 className="w-4 h-4 text-amber-400" />
+              <span>Multi-Branch Hub</span>
+            </button>
+          )}
 
           <button
             type="button"

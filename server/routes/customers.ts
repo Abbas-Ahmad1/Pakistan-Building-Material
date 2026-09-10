@@ -272,20 +272,57 @@ customersRouter.get('/:id/ledger', (req: Request, res: Response): any => {
       WHERE customer_id = ?
     `).all(customerId) as any[];
 
+    // Returns with ledger credit
+    const returns = db.prepare(`
+      SELECT 
+        id, 
+        return_number as reference, 
+        created_at as date, 
+        0 as debit, 
+        ledger_credit_amount as credit, 
+        reason as notes,
+        refund_type as payment_method,
+        'RETURN_CREDIT' as type
+      FROM sales_returns
+      WHERE customer_id = ? AND ledger_credit_amount > 0
+    `).all(customerId) as any[];
+
+    // Check for opening balance if customer was initialized with opening debt
+    const sumInvoiceGrandTotal = sales.reduce((sum, s) => sum + (Number(s.debit) || 0), 0);
+    const openingDebt = Math.max(0, Math.round(((customer.total_purchases || 0) - sumInvoiceGrandTotal) * 100) / 100);
+
+    const initialEntries: any[] = [];
+    if (openingDebt > 0) {
+      initialEntries.push({
+        id: 0,
+        reference: 'OPENING-BALANCE',
+        date: customer.created_at || new Date().toISOString(),
+        debit: openingDebt,
+        credit: 0,
+        due_amount: openingDebt,
+        payment_status: 'DUE',
+        payment_method: 'Opening',
+        notes: 'Initial opening balance on account creation',
+        type: 'OPENING',
+      });
+    }
+
     // Combine and sort chronologically
-    const combined = [...sales, ...payments].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    const combined = [...initialEntries, ...sales, ...payments, ...returns].sort(
+      (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
+    );
 
     // Calculate running balance
     let runningBalance = 0;
     const ledger = combined.map((entry) => {
-      if (entry.type === 'INVOICE') {
-        runningBalance += (entry.due_amount || 0);
+      if (entry.type === 'INVOICE' || entry.type === 'OPENING') {
+        runningBalance = Math.round((runningBalance + (entry.due_amount || 0)) * 100) / 100;
       } else {
-        runningBalance -= (entry.credit || 0);
+        runningBalance = Math.round((runningBalance - (entry.credit || 0)) * 100) / 100;
       }
       return {
         ...entry,
-        running_balance: runningBalance,
+        running_balance: Math.max(0, runningBalance),
       };
     });
 

@@ -17,7 +17,8 @@ import {
   ShieldCheck,
   Building,
   Layers,
-  AlertCircle
+  AlertCircle,
+  Truck
 } from 'lucide-react';
 import { Sale, SaleItem, SalesReturn } from '../../types';
 import { apiRequest } from '../../services/api';
@@ -27,12 +28,14 @@ import { ReceiptModal } from './ReceiptModal';
 
 interface InvoiceLookupModalProps {
   initialSale?: Sale | null;
+  initialTab?: 'details' | 'payment' | 'delivery' | 'returns' | 'history';
   onClose: () => void;
   onInvoiceUpdated?: (updatedSale: Sale) => void;
 }
 
 export const InvoiceLookupModal: React.FC<InvoiceLookupModalProps> = ({
   initialSale,
+  initialTab,
   onClose,
   onInvoiceUpdated,
 }) => {
@@ -43,13 +46,41 @@ export const InvoiceLookupModal: React.FC<InvoiceLookupModalProps> = ({
   const [currentSale, setCurrentSale] = useState<Sale | null>(initialSale || null);
 
   // Active sub-tab
-  const [activeTab, setActiveTab] = useState<'details' | 'payment' | 'returns' | 'history'>('details');
+  const [activeTab, setActiveTab] = useState<'details' | 'payment' | 'delivery' | 'returns' | 'history'>(
+    initialTab || (initialSale?.delivery_status === 'PARTIAL' || initialSale?.delivery_status === 'PENDING' ? 'delivery' : 'details')
+  );
 
   // Quick Pay State
   const [payAmount, setPayAmount] = useState<string>('');
   const [paymentMethod, setPaymentMethod] = useState<'Cash' | 'Credit' | 'Bank Transfer' | 'Card'>('Cash');
   const [payNotes, setPayNotes] = useState('');
   const [isProcessingPayment, setIsProcessingPayment] = useState(false);
+
+  // Delivery / Pickup State: Map of sale_item_id -> new delivered_quantity
+  const [deliveryMap, setDeliveryMap] = useState<Record<number, number>>({});
+  const [deliveryNotes, setDeliveryNotes] = useState('');
+  const [isProcessingDelivery, setIsProcessingDelivery] = useState(false);
+
+  // Delivery metrics
+  const totalPurchasedQty = (currentSale?.items || []).reduce((acc, it) => acc + Number(it.quantity || 0), 0);
+  const totalDeliveredQty = (currentSale?.items || []).reduce(
+    (acc, it) => acc + (it.delivered_quantity !== undefined ? Number(it.delivered_quantity) : Number(it.quantity || 0)),
+    0
+  );
+  const totalRemainingDelivery = Math.max(0, totalPurchasedQty - totalDeliveredQty);
+
+  // Sync deliveryMap whenever currentSale changes
+  React.useEffect(() => {
+    if (currentSale?.items) {
+      const map: Record<number, number> = {};
+      for (const it of currentSale.items) {
+        if (it.id) {
+          map[it.id] = it.delivered_quantity !== undefined ? it.delivered_quantity : it.quantity;
+        }
+      }
+      setDeliveryMap(map);
+    }
+  }, [currentSale]);
 
   // Return Items State: Map of sale_item_id -> { returnQty: number, reason: string }
   const [returnMap, setReturnMap] = useState<Record<number, { returnQty: number; reason: string }>>({});
@@ -132,6 +163,46 @@ export const InvoiceLookupModal: React.FC<InvoiceLookupModalProps> = ({
       setErrorMessage(err.message || 'Error processing payment.');
     } finally {
       setIsProcessingPayment(false);
+    }
+  };
+
+  // Delivery Update Handler
+  const handleUpdateDelivery = async () => {
+    if (!currentSale || !currentSale.items) return;
+    setIsProcessingDelivery(true);
+    setErrorMessage(null);
+    setSuccessMessage(null);
+
+    try {
+      const deliveries = currentSale.items.map((item) => {
+        const dQty = deliveryMap[item.id!] !== undefined 
+          ? deliveryMap[item.id!] 
+          : (item.delivered_quantity !== undefined ? item.delivered_quantity : item.quantity);
+        return {
+          sale_item_id: item.id!,
+          delivered_quantity: Math.max(0, Math.min(item.quantity, Number(dQty) || 0)),
+        };
+      });
+
+      const res = await apiRequest<Sale>(`/api/sales/${currentSale.id}/delivery`, {
+        method: 'POST',
+        body: JSON.stringify({
+          deliveries,
+          notes: deliveryNotes || 'Stock balance delivered / handed over to customer',
+        }),
+      });
+
+      if (res.success && res.data) {
+        setSuccessMessage(res.message || 'Delivery quantities updated successfully! Remaining count refreshed.');
+        setCurrentSale(res.data);
+        if (onInvoiceUpdated) onInvoiceUpdated(res.data);
+      } else {
+        setErrorMessage(res.message || 'Failed to update deliveries.');
+      }
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Error processing delivery update.');
+    } finally {
+      setIsProcessingDelivery(false);
     }
   };
 
@@ -372,9 +443,24 @@ export const InvoiceLookupModal: React.FC<InvoiceLookupModalProps> = ({
                           <Calendar className="w-3.5 h-3.5 text-stone-400" />
                           <span>{new Date(currentSale.sale_date).toLocaleString('en-PK')}</span>
                         </span>
-                        <span className="text-stone-500">
-                          Cashier: <strong className="text-stone-700">{currentSale.cashier_name || 'Terminal'}</strong>
-                        </span>
+                      </div>
+
+                      {/* Prominent Cashier & Branch Audit Verification Box */}
+                      <div className="mt-2 py-1.5 px-2.5 bg-amber-50/80 rounded-lg border border-amber-200 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+                        <div className="flex items-center space-x-1.5 text-amber-900">
+                          <Building className="w-3.5 h-3.5 text-amber-700" />
+                          <span>Branch:</span>
+                          <span className="font-bold text-stone-900 bg-white px-1.5 py-0.5 rounded border border-amber-200">
+                            {currentSale.branch_name || 'Main Store'} {currentSale.branch_code ? `(${currentSale.branch_code})` : ''}
+                          </span>
+                        </div>
+                        <div className="flex items-center space-x-1.5 text-amber-900">
+                          <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                          <span>Billed By:</span>
+                          <span className="font-bold text-stone-900 bg-white px-1.5 py-0.5 rounded border border-amber-200">
+                            {currentSale.cashier_name || 'Terminal Cashier'}
+                          </span>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -382,10 +468,17 @@ export const InvoiceLookupModal: React.FC<InvoiceLookupModalProps> = ({
                   {/* Financial Stats Cards */}
                   <div className="flex items-center space-x-2 bg-stone-50 p-2 rounded-lg border border-stone-200">
                     <div className="px-3 py-1 text-center">
-                      <div className="text-[10px] uppercase font-bold text-stone-500">Total Bill</div>
-                      <div className="text-sm font-black text-stone-900">
-                        Rs. {currentSale.grand_total?.toLocaleString()}
+                      <div className="text-[10px] uppercase font-bold text-stone-500">
+                        {(currentSale.returned_amount || 0) > 0 ? 'Net Total' : 'Total Bill'}
                       </div>
+                      <div className="text-sm font-black text-stone-900">
+                        Rs. {(currentSale.net_total || currentSale.grand_total)?.toLocaleString()}
+                      </div>
+                      {(currentSale.returned_amount || 0) > 0 && (
+                        <div className="text-[9px] text-rose-600 font-semibold">
+                          Ret: -Rs. {currentSale.returned_amount?.toLocaleString()}
+                        </div>
+                      )}
                     </div>
                     <div className="w-px h-8 bg-stone-300" />
                     <div className="px-3 py-1 text-center">
@@ -399,6 +492,13 @@ export const InvoiceLookupModal: React.FC<InvoiceLookupModalProps> = ({
                       <div className="text-[10px] uppercase font-bold text-stone-500">Pending Due</div>
                       <div className={`text-sm font-black ${currentSale.due_amount > 0 ? 'text-rose-700' : 'text-stone-400'}`}>
                         Rs. {currentSale.due_amount?.toLocaleString()}
+                      </div>
+                    </div>
+                    <div className="w-px h-8 bg-stone-300" />
+                    <div className="px-3 py-1 text-center">
+                      <div className="text-[10px] uppercase font-bold text-stone-500">Delivery Status</div>
+                      <div className={`text-xs font-black ${totalRemainingDelivery > 0 ? 'text-amber-700' : 'text-emerald-700'}`}>
+                        {totalRemainingDelivery > 0 ? `Pending (${totalRemainingDelivery} units)` : 'Fully Delivered'}
                       </div>
                     </div>
                   </div>
@@ -417,6 +517,30 @@ export const InvoiceLookupModal: React.FC<InvoiceLookupModalProps> = ({
                   >
                     <Package className="w-3.5 h-3.5" />
                     <span>Bill Items ({currentSale.items?.length || 0})</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('delivery')}
+                    className={`px-3.5 py-1.5 rounded-lg text-xs font-bold flex items-center space-x-1.5 transition-colors ${
+                      activeTab === 'delivery'
+                        ? 'bg-amber-600 text-white shadow-xs'
+                        : 'bg-stone-100 text-stone-700 hover:bg-stone-200'
+                    }`}
+                  >
+                    <Truck className="w-3.5 h-3.5" />
+                    <span>
+                      Delivery / Pickup
+                      {totalRemainingDelivery > 0 ? (
+                        <span className="ml-1 px-1.5 py-0.2 bg-amber-500 text-white rounded-full text-[10px]">
+                          {totalRemainingDelivery} Pending
+                        </span>
+                      ) : (
+                        <span className="ml-1 px-1.5 py-0.2 bg-emerald-600 text-white rounded-full text-[10px]">
+                          Complete
+                        </span>
+                      )}
+                    </span>
                   </button>
 
                   <button
@@ -484,37 +608,52 @@ export const InvoiceLookupModal: React.FC<InvoiceLookupModalProps> = ({
               {activeTab === 'details' && (
                 <div className="p-4 flex-1">
                   <h4 className="text-xs font-bold uppercase tracking-wider text-stone-600 mb-2">
-                    Purchased Items Breakdown
+                    Purchased Items & Delivery Breakdown
                   </h4>
                   <div className="border border-stone-200 rounded-lg overflow-hidden">
                     <table className="w-full text-left text-xs">
                       <thead className="bg-stone-100 text-stone-700 font-bold border-b border-stone-200">
                         <tr>
                           <th className="py-2.5 px-3">Item / SKU</th>
-                          <th className="py-2.5 px-3 text-center">Unit Price</th>
-                          <th className="py-2.5 px-3 text-center">Purchased Qty</th>
-                          <th className="py-2.5 px-3 text-center">Returned Qty</th>
-                          <th className="py-2.5 px-3 text-center">Active Net Qty</th>
+                          <th className="py-2.5 px-2 text-center">Unit Price</th>
+                          <th className="py-2.5 px-2 text-center">Purchased (Paid)</th>
+                          <th className="py-2.5 px-2 text-center">Delivered</th>
+                          <th className="py-2.5 px-2 text-center">Remaining</th>
+                          <th className="py-2.5 px-2 text-center">Returned</th>
                           <th className="py-2.5 px-3 text-right">Line Total</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-stone-200">
                         {currentSale.items?.map((item, idx) => {
                           const returned = item.returned_quantity || 0;
-                          const active = item.quantity - returned;
+                          const delivered = item.delivered_quantity !== undefined ? item.delivered_quantity : item.quantity;
+                          const remaining = Math.max(0, item.quantity - delivered);
+
                           return (
                             <tr key={idx} className="hover:bg-stone-50">
                               <td className="py-2.5 px-3">
                                 <div className="font-bold text-stone-900">{item.product_name}</div>
                                 <div className="text-[10px] text-stone-500">SKU: {item.sku || 'N/A'}</div>
                               </td>
-                              <td className="py-2.5 px-3 text-center text-stone-800">
+                              <td className="py-2.5 px-2 text-center text-stone-800">
                                 Rs. {item.unit_price?.toLocaleString()}
                               </td>
-                              <td className="py-2.5 px-3 text-center font-bold text-stone-900">
+                              <td className="py-2.5 px-2 text-center font-bold text-stone-900">
                                 {item.quantity} {item.unit || 'pcs'}
                               </td>
-                              <td className="py-2.5 px-3 text-center">
+                              <td className="py-2.5 px-2 text-center font-bold text-emerald-700">
+                                {delivered} {item.unit || 'pcs'}
+                              </td>
+                              <td className="py-2.5 px-2 text-center font-bold">
+                                {remaining > 0 ? (
+                                  <span className="px-2 py-0.5 bg-amber-100 text-amber-900 font-black rounded text-[11px]">
+                                    {remaining} pending
+                                  </span>
+                                ) : (
+                                  <span className="text-emerald-700 text-[11px] font-semibold">✓ Completed</span>
+                                )}
+                              </td>
+                              <td className="py-2.5 px-2 text-center">
                                 {returned > 0 ? (
                                   <span className="px-2 py-0.5 bg-rose-100 text-rose-800 font-bold rounded-full text-[10px]">
                                     -{returned} returned
@@ -522,9 +661,6 @@ export const InvoiceLookupModal: React.FC<InvoiceLookupModalProps> = ({
                                 ) : (
                                   <span className="text-stone-400">0</span>
                                 )}
-                              </td>
-                              <td className="py-2.5 px-3 text-center font-bold text-emerald-700">
-                                {active} {item.unit || 'pcs'}
                               </td>
                               <td className="py-2.5 px-3 text-right font-black text-stone-900">
                                 Rs. {item.line_total?.toLocaleString()}
@@ -536,15 +672,28 @@ export const InvoiceLookupModal: React.FC<InvoiceLookupModalProps> = ({
                     </table>
                   </div>
 
-                  <div className="mt-4 flex justify-end">
-                    <button
-                      type="button"
-                      onClick={() => setActiveTab('returns')}
-                      className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold flex items-center space-x-1.5 shadow-xs transition-colors"
-                    >
-                      <RotateCcw className="w-4 h-4" />
-                      <span>Return or Edit Any of These Items</span>
-                    </button>
+                  <div className="mt-4 flex justify-between items-center">
+                    <div className="text-xs text-stone-500">
+                      Payment is finalized for full purchase. Manage customer stock pickups anytime in the Delivery tab.
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('delivery')}
+                        className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold flex items-center space-x-1.5 shadow-xs transition-colors"
+                      >
+                        <Truck className="w-4 h-4" />
+                        <span>Manage Stock Pickups / Handover</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('returns')}
+                        className="px-3.5 py-2 bg-stone-100 hover:bg-stone-200 text-stone-700 rounded-lg text-xs font-bold flex items-center space-x-1.5 transition-colors"
+                      >
+                        <RotateCcw className="w-4 h-4" />
+                        <span>Return Items</span>
+                      </button>
+                    </div>
                   </div>
                 </div>
               )}
@@ -674,6 +823,212 @@ export const InvoiceLookupModal: React.FC<InvoiceLookupModalProps> = ({
                       </div>
                     )}
                   </div>
+                </div>
+              )}
+
+              {/* Tab: Item Delivery & Pickup Management */}
+              {activeTab === 'delivery' && (
+                <div className="p-4 flex-1 flex flex-col space-y-4">
+                  {/* Delivery Info Banner */}
+                  <div className="p-3 bg-amber-50 border border-amber-300 rounded-lg text-xs text-amber-950 flex items-start space-x-3">
+                    <Truck className="w-5 h-5 text-amber-700 shrink-0 mt-0.5" />
+                    <div className="flex-1">
+                      <p className="font-bold text-sm text-amber-950">Partial Item Delivery & Stock Balance Tracking</p>
+                      <p className="text-[11px] text-amber-800 mt-0.5 leading-relaxed">
+                        Total payment for invoice <strong>#{currentSale.invoice_number}</strong> was calculated on the full purchased quantity.
+                        When the customer arrives to pick up items, enter the newly delivered quantities below. The remaining balance will automatically refresh and print on the customer's delivery slip.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Summary Metric Strip */}
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="p-3 bg-stone-50 border border-stone-200 rounded-lg text-center">
+                      <span className="text-[10px] uppercase font-bold text-stone-500 block">Total Purchased (Paid)</span>
+                      <span className="text-xl font-black text-stone-900">{totalPurchasedQty} units</span>
+                    </div>
+                    <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-center">
+                      <span className="text-[10px] uppercase font-bold text-emerald-700 block">Total Picked Up</span>
+                      <span className="text-xl font-black text-emerald-800">{totalDeliveredQty} units</span>
+                    </div>
+                    <div className={`p-3 rounded-lg text-center border ${
+                      totalRemainingDelivery > 0 ? 'bg-amber-50 border-amber-300 text-amber-950' : 'bg-stone-50 border-stone-200 text-stone-600'
+                    }`}>
+                      <span className="text-[10px] uppercase font-bold text-amber-800 block">Remaining Stock Balance</span>
+                      <span className="text-xl font-black text-amber-900">{totalRemainingDelivery} units</span>
+                    </div>
+                  </div>
+
+                  {/* Item Delivery Table */}
+                  <div className="border border-stone-200 rounded-lg overflow-hidden bg-white shadow-xs">
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-stone-100 text-stone-700 font-bold border-b border-stone-200 uppercase text-[11px]">
+                        <tr>
+                          <th className="py-2.5 px-3">Item Description</th>
+                          <th className="py-2.5 px-3 text-center">Total Purchased (Paid)</th>
+                          <th className="py-2.5 px-3 text-center w-56">Delivered / Picked Up</th>
+                          <th className="py-2.5 px-3 text-center">Remaining Balance</th>
+                          <th className="py-2.5 px-3 text-center">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-stone-200">
+                        {currentSale.items?.map((item) => {
+                          const purchased = Number(item.quantity);
+                          const currentDeliveredVal = deliveryMap[item.id!] !== undefined 
+                            ? Number(deliveryMap[item.id!]) 
+                            : (item.delivered_quantity !== undefined ? Number(item.delivered_quantity) : purchased);
+                          const currentRemaining = Math.max(0, purchased - currentDeliveredVal);
+
+                          return (
+                            <tr key={item.id} className="hover:bg-stone-50/80">
+                              <td className="py-3 px-3">
+                                <div className="font-bold text-stone-900 text-sm">{item.product_name}</div>
+                                <div className="text-[10px] text-stone-500 flex items-center space-x-2 mt-0.5">
+                                  <span>SKU: {item.sku || 'N/A'}</span>
+                                  <span>•</span>
+                                  <span>Unit: {item.unit || 'Piece'}</span>
+                                  <span>•</span>
+                                  <span>Unit Price: Rs. {item.unit_price?.toLocaleString()}</span>
+                                </div>
+                              </td>
+
+                              <td className="py-3 px-3 text-center font-bold text-stone-900 text-sm">
+                                {purchased} {item.unit || 'pcs'}
+                              </td>
+
+                              <td className="py-3 px-3">
+                                <div className="flex items-center space-x-2">
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    max={purchased}
+                                    value={currentDeliveredVal}
+                                    onChange={(e) => {
+                                      const num = Math.max(0, Math.min(purchased, Number(e.target.value) || 0));
+                                      setDeliveryMap((prev) => ({
+                                        ...prev,
+                                        [item.id!]: num,
+                                      }));
+                                    }}
+                                    className="w-24 px-2 py-1.5 border border-stone-300 rounded font-bold text-center text-stone-900 focus:outline-none focus:ring-2 focus:ring-amber-500 text-sm"
+                                  />
+                                  <span className="text-xs text-stone-500 font-medium">{item.unit || 'pcs'}</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setDeliveryMap((prev) => ({
+                                        ...prev,
+                                        [item.id!]: purchased,
+                                      }));
+                                    }}
+                                    className="px-2 py-1 bg-stone-100 hover:bg-stone-200 text-[10px] font-bold text-stone-700 rounded border border-stone-200 whitespace-nowrap"
+                                  >
+                                    All ({purchased})
+                                  </button>
+                                </div>
+                              </td>
+
+                              <td className="py-3 px-3 text-center">
+                                <span className={`inline-block px-2.5 py-1 rounded text-xs font-black ${
+                                  currentRemaining > 0 
+                                    ? 'bg-amber-100 text-amber-900 border border-amber-300' 
+                                    : 'bg-emerald-100 text-emerald-800'
+                                }`}>
+                                  {currentRemaining} {item.unit || 'pcs'}
+                                </span>
+                              </td>
+
+                              <td className="py-3 px-3 text-center">
+                                {currentRemaining === 0 ? (
+                                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">
+                                    <CheckCircle2 className="w-3 h-3 mr-1" />
+                                    Fully Delivered
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900">
+                                    <Truck className="w-3 h-3 mr-1" />
+                                    Partial ({currentRemaining} Left)
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Dispatch Notes Input & Action Button */}
+                  <div className="bg-stone-50 border border-stone-200 rounded-lg p-4 space-y-3">
+                    <div>
+                      <label className="block text-xs font-bold text-stone-700 mb-1">
+                        Delivery Notes / Gate Pass Reference (Optional)
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Loaded 100 bags on Shahzad Suzuki Pickup # LEJ-882, handed to customer driver"
+                        value={deliveryNotes}
+                        onChange={(e) => setDeliveryNotes(e.target.value)}
+                        className="w-full px-3 py-2 border border-stone-300 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white"
+                      />
+                    </div>
+
+                    <div className="flex items-center justify-between pt-1">
+                      <button
+                        type="button"
+                        onClick={() => setShowReceiptModal(true)}
+                        className="px-4 py-2 bg-stone-200 hover:bg-stone-300 text-stone-800 rounded-lg text-xs font-bold flex items-center space-x-1.5 transition-colors"
+                      >
+                        <Printer className="w-3.5 h-3.5" />
+                        <span>Print Bill with Delivery Status</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        disabled={isProcessingDelivery}
+                        onClick={handleUpdateDelivery}
+                        className="px-6 py-2.5 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white rounded-lg text-xs font-bold shadow-md flex items-center space-x-2 transition-colors"
+                      >
+                        {isProcessingDelivery ? (
+                          <span>Updating Delivery...</span>
+                        ) : (
+                          <>
+                            <CheckCircle2 className="w-4 h-4" />
+                            <span>Save Delivery & Refresh Remaining Balance</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Delivery History Logs (if any past pickups recorded) */}
+                  {currentSale.delivery_logs && currentSale.delivery_logs.length > 0 && (
+                    <div className="border border-stone-200 rounded-lg p-3 bg-white space-y-2">
+                      <h5 className="text-xs font-bold uppercase text-stone-700 flex items-center space-x-1.5">
+                        <History className="w-3.5 h-3.5 text-amber-600" />
+                        <span>Previous Pickup & Delivery Log History</span>
+                      </h5>
+                      <div className="divide-y divide-stone-100 text-xs">
+                        {currentSale.delivery_logs.map((log) => (
+                          <div key={log.id} className="py-2 flex items-center justify-between">
+                            <div>
+                              <div className="font-semibold text-stone-900">
+                                {log.product_name}: <span className="text-emerald-700 font-bold">+{log.delivered_quantity} units delivered</span>
+                              </div>
+                              <div className="text-[10px] text-stone-500 mt-0.5">
+                                {log.notes && <span className="italic mr-2">"{log.notes}"</span>}
+                                <span>Remaining balance after pickup: <strong>{log.remaining_after} units</strong></span>
+                              </div>
+                            </div>
+                            <div className="text-right text-[10px] text-stone-500">
+                              <div>{new Date(log.created_at).toLocaleString('en-PK')}</div>
+                              {log.delivered_by_name && <div>By: {log.delivered_by_name}</div>}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 

@@ -57,6 +57,7 @@ export function initDatabase() {
       total_purchases REAL DEFAULT 0.00,
       paid_amount REAL DEFAULT 0.00,
       payable_balance REAL DEFAULT 0.00,
+      status TEXT DEFAULT 'ACTIVE',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
@@ -320,14 +321,217 @@ export function initDatabase() {
       FOREIGN KEY (sale_item_id) REFERENCES sale_items(id),
       FOREIGN KEY (product_id) REFERENCES products(id)
     );
+
+    CREATE TABLE IF NOT EXISTS branches (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT UNIQUE NOT NULL,
+      code TEXT UNIQUE NOT NULL,
+      address TEXT,
+      phone TEXT,
+      manager_name TEXT,
+      is_main INTEGER DEFAULT 0,
+      status TEXT DEFAULT 'ACTIVE',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS branch_stocks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      branch_id INTEGER NOT NULL,
+      product_id INTEGER NOT NULL,
+      current_stock REAL NOT NULL DEFAULT 0.00,
+      minimum_stock REAL NOT NULL DEFAULT 5.00,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(branch_id, product_id),
+      FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE,
+      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS stock_transfers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      transfer_number TEXT UNIQUE NOT NULL,
+      from_branch_id INTEGER NOT NULL,
+      to_branch_id INTEGER NOT NULL,
+      transfer_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+      status TEXT CHECK(status IN ('COMPLETED', 'PENDING', 'CANCELLED')) DEFAULT 'COMPLETED',
+      notes TEXT,
+      created_by INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (from_branch_id) REFERENCES branches(id),
+      FOREIGN KEY (to_branch_id) REFERENCES branches(id),
+      FOREIGN KEY (created_by) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS stock_transfer_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      transfer_id INTEGER NOT NULL,
+      product_id INTEGER NOT NULL,
+      quantity REAL NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (transfer_id) REFERENCES stock_transfers(id) ON DELETE CASCADE,
+      FOREIGN KEY (product_id) REFERENCES products(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS cash_drawer_shifts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      shift_code TEXT UNIQUE NOT NULL,
+      branch_id INTEGER NOT NULL,
+      cashier_id INTEGER NOT NULL,
+      cashier_name TEXT NOT NULL,
+      opened_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      closed_at DATETIME,
+      status TEXT CHECK(status IN ('OPEN', 'CLOSED')) DEFAULT 'OPEN',
+      opening_balance REAL NOT NULL DEFAULT 0.00,
+      cash_sales_amount REAL NOT NULL DEFAULT 0.00,
+      other_sales_amount REAL NOT NULL DEFAULT 0.00,
+      total_sales_amount REAL NOT NULL DEFAULT 0.00,
+      cash_refunds_amount REAL NOT NULL DEFAULT 0.00,
+      drawer_expenses_amount REAL NOT NULL DEFAULT 0.00,
+      expected_closing_cash REAL DEFAULT 0.00,
+      actual_closing_cash REAL,
+      cash_difference REAL DEFAULT 0.00,
+      closing_notes TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (branch_id) REFERENCES branches(id),
+      FOREIGN KEY (cashier_id) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS drawer_expenses (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      shift_id INTEGER NOT NULL,
+      branch_id INTEGER NOT NULL,
+      cashier_id INTEGER NOT NULL,
+      cashier_name TEXT NOT NULL,
+      category TEXT NOT NULL,
+      amount REAL NOT NULL,
+      note TEXT NOT NULL,
+      paid_to TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (shift_id) REFERENCES cash_drawer_shifts(id) ON DELETE CASCADE,
+      FOREIGN KEY (branch_id) REFERENCES branches(id),
+      FOREIGN KEY (cashier_id) REFERENCES users(id)
+    );
   `);
 
-  // Column migrations for item returns
+  // Column migrations for branches, item returns, shifts & suppliers
+  try {
+    db.exec('ALTER TABLE users ADD COLUMN branch_id INTEGER REFERENCES branches(id);');
+  } catch (_) {}
+  try {
+    db.exec('ALTER TABLE sales ADD COLUMN branch_id INTEGER REFERENCES branches(id);');
+  } catch (_) {}
+  try {
+    db.exec('ALTER TABLE sales ADD COLUMN cashier_name TEXT;');
+  } catch (_) {}
+  try {
+    db.exec('ALTER TABLE sales ADD COLUMN shift_id INTEGER REFERENCES cash_drawer_shifts(id);');
+  } catch (_) {}
+  try {
+    db.exec('ALTER TABLE inventory_transactions ADD COLUMN branch_id INTEGER REFERENCES branches(id);');
+  } catch (_) {}
+  try {
+    db.exec("ALTER TABLE suppliers ADD COLUMN status TEXT DEFAULT 'ACTIVE';");
+  } catch (_) {}
   try {
     db.exec('ALTER TABLE sale_items ADD COLUMN returned_quantity REAL DEFAULT 0.00;');
   } catch (_) {}
   try {
+    db.exec('ALTER TABLE sale_items ADD COLUMN remaining_quantity REAL;');
+  } catch (_) {}
+  try {
     db.exec('ALTER TABLE sales ADD COLUMN returned_amount REAL DEFAULT 0.00;');
+  } catch (_) {}
+  try {
+    db.exec('ALTER TABLE sales ADD COLUMN original_grand_total REAL;');
+  } catch (_) {}
+  try {
+    db.exec('ALTER TABLE sales ADD COLUMN net_total REAL;');
+  } catch (_) {}
+  try {
+    db.exec('ALTER TABLE sale_items ADD COLUMN delivered_quantity REAL;');
+  } catch (_) {}
+  try {
+    db.exec("ALTER TABLE sales ADD COLUMN delivery_status TEXT DEFAULT 'DELIVERED';");
+  } catch (_) {}
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS sale_delivery_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sale_id INTEGER NOT NULL,
+        sale_item_id INTEGER NOT NULL,
+        delivered_quantity REAL NOT NULL,
+        total_delivered_after REAL NOT NULL,
+        remaining_after REAL NOT NULL,
+        notes TEXT,
+        recorded_by INTEGER,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
+        FOREIGN KEY (sale_item_id) REFERENCES sale_items(id) ON DELETE CASCADE
+      );
+    `);
+  } catch (_) {}
+
+  // Backfill existing rows
+  try {
+    db.exec('UPDATE sale_items SET delivered_quantity = quantity WHERE delivered_quantity IS NULL;');
+  } catch (_) {}
+  try {
+    db.exec("UPDATE sales SET delivery_status = 'DELIVERED' WHERE delivery_status IS NULL;");
+  } catch (_) {}
+  try {
+    db.exec('UPDATE sale_items SET remaining_quantity = MAX(0, quantity - COALESCE(returned_quantity, 0)) WHERE remaining_quantity IS NULL;');
+  } catch (_) {}
+  try {
+    // If original_grand_total is not set:
+    // If returned_amount was logged previously, grand_total was still original total in prior versions
+    db.exec('UPDATE sales SET original_grand_total = grand_total WHERE original_grand_total IS NULL;');
+  } catch (_) {}
+  try {
+    // Set net_total = original_grand_total - COALESCE(returned_amount, 0)
+    db.exec('UPDATE sales SET net_total = ROUND(original_grand_total - COALESCE(returned_amount, 0), 2) WHERE net_total IS NULL;');
+    // Set grand_total to net_total for any past returned sales
+    db.exec('UPDATE sales SET grand_total = net_total WHERE COALESCE(returned_amount, 0) > 0;');
+  } catch (_) {}
+
+  // High-performance relational database indexes
+  try {
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_products_sku ON products(sku);
+      CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode);
+      CREATE INDEX IF NOT EXISTS idx_products_category ON products(category_id);
+      CREATE INDEX IF NOT EXISTS idx_products_status ON products(status);
+
+      CREATE INDEX IF NOT EXISTS idx_sales_invoice ON sales(invoice_number);
+      CREATE INDEX IF NOT EXISTS idx_sales_customer ON sales(customer_id);
+      CREATE INDEX IF NOT EXISTS idx_sales_branch ON sales(branch_id);
+      CREATE INDEX IF NOT EXISTS idx_sales_shift ON sales(shift_id);
+      CREATE INDEX IF NOT EXISTS idx_sales_date ON sales(sale_date);
+      CREATE INDEX IF NOT EXISTS idx_sales_payment_status ON sales(payment_status);
+
+      CREATE INDEX IF NOT EXISTS idx_sale_items_sale ON sale_items(sale_id);
+      CREATE INDEX IF NOT EXISTS idx_sale_items_product ON sale_items(product_id);
+
+      CREATE INDEX IF NOT EXISTS idx_inv_tx_product ON inventory_transactions(product_id);
+      CREATE INDEX IF NOT EXISTS idx_inv_tx_branch ON inventory_transactions(branch_id);
+      CREATE INDEX IF NOT EXISTS idx_inv_tx_type ON inventory_transactions(transaction_type);
+
+      CREATE INDEX IF NOT EXISTS idx_branch_stocks_branch ON branch_stocks(branch_id);
+      CREATE INDEX IF NOT EXISTS idx_branch_stocks_product ON branch_stocks(product_id);
+
+      CREATE INDEX IF NOT EXISTS idx_purchases_supplier ON purchases(supplier_id);
+      CREATE INDEX IF NOT EXISTS idx_purchase_items_purchase ON purchase_items(purchase_id);
+      CREATE INDEX IF NOT EXISTS idx_purchase_items_product ON purchase_items(product_id);
+
+      CREATE INDEX IF NOT EXISTS idx_cust_payments_customer ON customer_payments(customer_id);
+      CREATE INDEX IF NOT EXISTS idx_supp_payments_supplier ON supplier_payments(supplier_id);
+
+      CREATE INDEX IF NOT EXISTS idx_sales_returns_sale ON sales_returns(sale_id);
+      CREATE INDEX IF NOT EXISTS idx_sales_returns_customer ON sales_returns(customer_id);
+      CREATE INDEX IF NOT EXISTS idx_sales_return_items_return ON sales_return_items(return_id);
+
+      CREATE INDEX IF NOT EXISTS idx_shifts_branch_status ON cash_drawer_shifts(branch_id, status);
+      CREATE INDEX IF NOT EXISTS idx_drawer_expenses_shift ON drawer_expenses(shift_id);
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_user_module ON audit_logs(user_id, module);
+    `);
   } catch (_) {}
 
   seedInitialData();
@@ -335,15 +539,20 @@ export function initDatabase() {
   // Ensure current store branding and owner match latest configuration
   try {
     db.prepare(`UPDATE settings SET value = 'Pakistan Building Materials & paint store' WHERE key = 'store_name'`).run();
-    db.prepare(`UPDATE settings SET value = 'sales@pakistanmaterials.pk' WHERE key = 'email' AND value = 'sales@almadinahardware.com'`).run();
+    db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('email', 'imtayazautos@gmail.com')`).run();
     db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('owner_name', 'Imtiaz Ali')`).run();
     db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('address', 'Kumber Bazar Lower Dir Maidan')`).run();
-    db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('phone', '+92 300 5936652 / +92 305 9632244')`).run();
+    db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('phone', '+92 300 5936652 / +92 300 1801818')`).run();
     db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('phone_primary', '+92 300 5936652')`).run();
-    db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('phone_secondary', '+92 305 9632244')`).run();
-    db.prepare(`UPDATE users SET name = 'Imtiaz Ali (Owner)', email = 'imtiaz@pakistanmaterials.pk' WHERE username = 'admin'`).run();
-    db.prepare(`UPDATE users SET name = 'Majid Mashwani (Cashier)', email = 'majid@pakistanmaterials.pk' WHERE username = 'cashier'`).run();
-    db.prepare(`UPDATE sales SET cashier_name = 'Majid Mashwani' WHERE cashier_name LIKE '%Ali Raza%'`).run();
+    db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('phone_secondary', '+92 300 1801818')`).run();
+    db.prepare(`UPDATE users SET name = 'Imtiaz Ali (Owner)', email = 'imtayazautos@gmail.com' WHERE username = 'admin'`).run();
+    db.prepare(`UPDATE users SET name = 'Majid Mashwani (Cashier)' WHERE username = 'cashier'`).run();
+    try {
+      db.prepare(`UPDATE branches SET phone = '+92 300 1801818' WHERE phone = '+92 305 9632244'`).run();
+    } catch (_) {}
+    try {
+      db.prepare(`UPDATE sales SET cashier_name = 'Majid Mashwani' WHERE cashier_name LIKE '%Ali Raza%'`).run();
+    } catch (_) {}
 
     // Check if Paints category exists, if not add it
     const paintCat = db.prepare(`SELECT id FROM categories WHERE code = 'CAT-PNT' OR name LIKE '%Paint%'`).get() as any;
@@ -379,8 +588,326 @@ export function initDatabase() {
       insProd.run('PNT-ROL-09', '8964007005', 'Royal Heavy Duty Paint Roller 9" with Frame', paintCatId, 'Royal Tools', 'Non-shed micro-fiber roller sleeve with ergonomic cage frame', 'Piece', 420, 650, 550, 40, 10);
       insProd.run('PNT-BRS-04', '8964007006', 'Bristle Pro Paint Brush 4 inch Fine Finish', paintCatId, 'Bristle Pro', 'Pure synthetic flagged bristles for smooth paint application', 'Piece', 180, 290, 240, 55, 12);
     }
+
+    // Synchronize Cement & Aggregates Brands & Subcategories
+    const cementCat = db.prepare(`SELECT id FROM categories WHERE code = 'CAT-CEM' OR name LIKE '%Cement%'`).get() as any;
+    const cementCatId = cementCat?.id || 4;
+
+    const cementBrands = [
+      {
+        name: 'Cherat Cement',
+        sku: 'CEM-CHT-50',
+        barcode: '8964001002',
+        productName: 'Cherat Cement OPC 50kg Bag',
+        purchasePrice: 1310,
+        sellingPrice: 1440,
+        wholesalePrice: 1390,
+        currentStock: 150,
+        minStock: 40,
+        desc: 'Cherat Ordinary Portland Cement (OPC) 50kg bag for residential and commercial construction',
+      },
+      {
+        name: 'Fauji Cement (FCCL)',
+        sku: 'CEM-FC-50',
+        barcode: '8964001003',
+        productName: 'Fauji Cement (FCCL) OPC 50kg Bag',
+        purchasePrice: 1330,
+        sellingPrice: 1460,
+        wholesalePrice: 1410,
+        currentStock: 200,
+        minStock: 50,
+        desc: 'Fauji Cement (FCCL) high-grade 50kg Portland cement bag',
+      },
+      {
+        name: 'Lucky Cement',
+        sku: 'CEM-LCK-50',
+        barcode: '8964001001',
+        productName: 'Lucky Cement OPC 50kg Bag',
+        purchasePrice: 1320,
+        sellingPrice: 1450,
+        wholesalePrice: 1400,
+        currentStock: 320,
+        minStock: 50,
+        desc: 'Lucky Cement premium high-strength Portland Grey Cement 50kg bag',
+      },
+      {
+        name: 'Bestway Cement',
+        sku: 'CEM-BST-50',
+        barcode: '8964001004',
+        productName: 'Bestway Cement OPC 50kg Bag',
+        purchasePrice: 1325,
+        sellingPrice: 1450,
+        wholesalePrice: 1400,
+        currentStock: 180,
+        minStock: 40,
+        desc: 'Bestway all-weather high-strength Portland Cement 50kg bag',
+      },
+      {
+        name: 'D.G. Khan Cement (DGKC)',
+        sku: 'CEM-DGK-50',
+        barcode: '8964001005',
+        productName: 'D.G. Khan Cement (DGKC) OPC 50kg Bag',
+        purchasePrice: 1315,
+        sellingPrice: 1440,
+        wholesalePrice: 1395,
+        currentStock: 160,
+        minStock: 40,
+        desc: 'D.G. Khan Cement (DGKC) premium grade 50kg grey Portland cement bag',
+      },
+      {
+        name: 'Maple Leaf Cement',
+        sku: 'CEM-MLC-50',
+        barcode: '8964001006',
+        productName: 'Maple Leaf Cement OPC 50kg Bag',
+        purchasePrice: 1335,
+        sellingPrice: 1465,
+        wholesalePrice: 1415,
+        currentStock: 190,
+        minStock: 50,
+        desc: 'Maple Leaf high-early-strength Portland cement 50kg bag',
+      },
+      {
+        name: 'Falcon Cement',
+        sku: 'CEM-FLC-50',
+        barcode: '8964001007',
+        productName: 'Falcon Cement OPC 50kg Bag',
+        purchasePrice: 1300,
+        sellingPrice: 1430,
+        wholesalePrice: 1380,
+        currentStock: 120,
+        minStock: 30,
+        desc: 'Falcon Cement durable construction grade 50kg Portland cement bag',
+      },
+      {
+        name: 'Kohat Cement',
+        sku: 'CEM-KHT-50',
+        barcode: '8964001008',
+        productName: 'Kohat Cement OPC 50kg Bag',
+        purchasePrice: 1310,
+        sellingPrice: 1435,
+        wholesalePrice: 1385,
+        currentStock: 140,
+        minStock: 35,
+        desc: 'Kohat Cement high-fineness grey Portland cement 50kg bag',
+      },
+      {
+        name: 'Pioneer Cement',
+        sku: 'CEM-PNR-50',
+        barcode: '8964001009',
+        productName: 'Pioneer Cement OPC 50kg Bag',
+        purchasePrice: 1305,
+        sellingPrice: 1430,
+        wholesalePrice: 1380,
+        currentStock: 130,
+        minStock: 35,
+        desc: 'Pioneer Cement rapid-setting structural 50kg grey cement bag',
+      },
+      {
+        name: 'Power Cement',
+        sku: 'CEM-PWR-50',
+        barcode: '8964001010',
+        productName: 'Power Cement OPC 50kg Bag',
+        purchasePrice: 1295,
+        sellingPrice: 1420,
+        wholesalePrice: 1370,
+        currentStock: 110,
+        minStock: 30,
+        desc: 'Power Cement high-grade construction 50kg Portland cement bag',
+      },
+    ];
+
+    try {
+      db.prepare("DELETE FROM subcategories WHERE category_id = ? AND name = 'Portland Cement 50kg'").run(cementCatId);
+    } catch (_) {}
+
+    // For each cement brand, ensure subcategory and product exist
+    for (const b of cementBrands) {
+      let sub = db.prepare('SELECT id FROM subcategories WHERE category_id = ? AND name = ?').get(cementCatId, b.name) as any;
+      let subId = sub?.id;
+      if (!subId) {
+        const ins = db.prepare('INSERT INTO subcategories (category_id, name) VALUES (?, ?)').run(cementCatId, b.name);
+        subId = Number(ins.lastInsertRowid);
+      }
+
+      // Check if product exists
+      const prod = db.prepare('SELECT id FROM products WHERE sku = ? OR name = ?').get(b.sku, b.productName) as any;
+      if (!prod) {
+        db.prepare(`
+          INSERT INTO products (
+            sku, barcode, name, category_id, subcategory_id, brand, description,
+            unit, purchase_price, selling_price, wholesale_price, current_stock, minimum_stock,
+            status
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'Bag', ?, ?, ?, ?, ?, 'active')
+        `).run(
+          b.sku,
+          b.barcode,
+          b.productName,
+          cementCatId,
+          subId,
+          b.name,
+          b.desc,
+          b.purchasePrice,
+          b.sellingPrice,
+          b.wholesalePrice,
+          b.currentStock,
+          b.minStock
+        );
+      } else {
+        // Update subcategory_id and brand if needed
+        db.prepare(`
+          UPDATE products 
+          SET subcategory_id = COALESCE(subcategory_id, ?), brand = COALESCE(brand, ?)
+          WHERE id = ?
+        `).run(subId, b.name, prod.id);
+      }
+    }
   } catch (err) {
     console.error('Error synchronizing store branding and catalog:', err);
+  }
+
+  // Multi-branch initial setup and stock distribution
+  seedAndSyncBranches();
+}
+
+function seedAndSyncBranches() {
+  try {
+    // 1. Ensure 3 default branches exist
+    const defaultBranches = [
+      {
+        id: 1,
+        name: 'Branch 1 - Main Store & Central Warehouse',
+        code: 'BR-01',
+        address: 'Kumber Bazar Lower Dir Maidan',
+        phone: '+92 300 5936652',
+        manager_name: 'Imtiaz Ali (Owner)',
+        is_main: 1,
+      },
+      {
+        id: 2,
+        name: 'Branch 2 - City Commercial Center',
+        code: 'BR-02',
+        address: 'Shop #12-14, Main Commercial Market, Timergara',
+        phone: '+92 300 1801818',
+        manager_name: 'Majid Mashwani',
+        is_main: 0,
+      },
+      {
+        id: 3,
+        name: 'Branch 3 - Highway Industrial Depot',
+        code: 'BR-03',
+        address: 'Plot 28, Bypass Road, Chakdara Zone',
+        phone: '+92 300 1234567',
+        manager_name: 'Tariq Khan',
+        is_main: 0,
+      },
+    ];
+
+    for (const b of defaultBranches) {
+      const existing = db.prepare('SELECT id FROM branches WHERE id = ? OR code = ?').get(b.id, b.code) as any;
+      if (!existing) {
+        db.prepare(`
+          INSERT INTO branches (id, name, code, address, phone, manager_name, is_main, status)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
+        `).run(b.id, b.name, b.code, b.address, b.phone, b.manager_name, b.is_main);
+      }
+    }
+
+    // 2. Assign default branch_id = 1 to existing users if NULL
+    db.prepare('UPDATE users SET branch_id = 1 WHERE branch_id IS NULL').run();
+
+    // 3. Assign default branch_id = 1 and cashier_name to past sales if NULL
+    db.prepare('UPDATE sales SET branch_id = 1 WHERE branch_id IS NULL').run();
+    db.prepare(`
+      UPDATE sales 
+      SET cashier_name = (
+        SELECT name FROM users WHERE users.id = sales.cashier_id
+      )
+      WHERE cashier_name IS NULL OR cashier_name = ''
+    `).run();
+
+    // 4. Populate / Sync branch_stocks for all products
+    const products = db.prepare('SELECT id, sku, name, current_stock, minimum_stock FROM products').all() as any[];
+
+    for (const p of products) {
+      const existingStocks = db.prepare('SELECT branch_id, current_stock FROM branch_stocks WHERE product_id = ?').all(p.id) as any[];
+
+      // Check Falcon Cement specifically
+      const isFalconCement = p.sku === 'CEM-FLC-50' || (p.name && p.name.includes('Falcon Cement'));
+
+      if (existingStocks.length === 0) {
+        if (isFalconCement) {
+          // Exactly as requested: 50 bags in Branch 1, 20 bags in Branch 2, and 0 in Branch 3
+          db.prepare('INSERT INTO branch_stocks (branch_id, product_id, current_stock, minimum_stock) VALUES (?, ?, ?, ?)').run(1, p.id, 50, 10);
+          db.prepare('INSERT INTO branch_stocks (branch_id, product_id, current_stock, minimum_stock) VALUES (?, ?, ?, ?)').run(2, p.id, 20, 5);
+          db.prepare('INSERT INTO branch_stocks (branch_id, product_id, current_stock, minimum_stock) VALUES (?, ?, ?, ?)').run(3, p.id, 0, 5);
+          db.prepare('UPDATE products SET current_stock = 70 WHERE id = ?').run(p.id);
+        } else {
+          const total = Math.max(0, Number(p.current_stock) || 0);
+          const b1Stock = Math.floor(total * 0.6);
+          const b2Stock = Math.floor(total * 0.25);
+          const b3Stock = Math.max(0, total - b1Stock - b2Stock);
+
+          db.prepare('INSERT INTO branch_stocks (branch_id, product_id, current_stock, minimum_stock) VALUES (?, ?, ?, ?)').run(1, p.id, b1Stock, p.minimum_stock || 5);
+          db.prepare('INSERT INTO branch_stocks (branch_id, product_id, current_stock, minimum_stock) VALUES (?, ?, ?, ?)').run(2, p.id, b2Stock, Math.max(2, Math.floor((p.minimum_stock || 5) * 0.5)));
+          db.prepare('INSERT INTO branch_stocks (branch_id, product_id, current_stock, minimum_stock) VALUES (?, ?, ?, ?)').run(3, p.id, b3Stock, Math.max(2, Math.floor((p.minimum_stock || 5) * 0.5)));
+        }
+      } else {
+        if (isFalconCement) {
+          db.prepare('INSERT OR REPLACE INTO branch_stocks (branch_id, product_id, current_stock, minimum_stock) VALUES (1, ?, 50, 10)').run(p.id);
+          db.prepare('INSERT OR REPLACE INTO branch_stocks (branch_id, product_id, current_stock, minimum_stock) VALUES (2, ?, 20, 5)').run(p.id);
+          db.prepare('INSERT OR REPLACE INTO branch_stocks (branch_id, product_id, current_stock, minimum_stock) VALUES (3, ?, 0, 5)').run(p.id);
+          db.prepare('UPDATE products SET current_stock = 70 WHERE id = ?').run(p.id);
+        }
+      }
+    }
+
+    // Ensure all products have current_stock equal to sum of their branch stocks
+    db.prepare(`
+      UPDATE products 
+      SET current_stock = COALESCE((
+        SELECT SUM(current_stock) FROM branch_stocks WHERE branch_stocks.product_id = products.id
+      ), current_stock)
+      WHERE id IN (SELECT DISTINCT product_id FROM branch_stocks)
+    `).run();
+
+    // 5. Seed initial cash drawer shift if empty
+    const shiftCount = db.prepare('SELECT COUNT(*) as count FROM cash_drawer_shifts').get() as any;
+    if (shiftCount.count === 0) {
+      const todayStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+      const shiftCode = `SFT-${todayStr}-001`;
+      const insShift = db.prepare(`
+        INSERT INTO cash_drawer_shifts (
+          shift_code, branch_id, cashier_id, cashier_name, opened_at, status,
+          opening_balance, expected_closing_cash, closing_notes
+        ) VALUES (?, 1, 2, 'Majid Mashwani (Cashier)', datetime('now', '-4 hours'), 'OPEN', 10000, 10000, 'Morning opening shift float')
+      `).run(shiftCode);
+
+      const shiftId = Number(insShift.lastInsertRowid);
+
+      // Add demo petty drawer expenses
+      db.prepare(`
+        INSERT INTO drawer_expenses (shift_id, branch_id, cashier_id, cashier_name, category, amount, note, paid_to, created_at)
+        VALUES (?, 1, 2, 'Majid Mashwani (Cashier)', 'Loading & Unloading Labor (Mazdoori)', 600, 'Mazdoori for unloading 20 bags cement', 'Gul Khan (Labor)', datetime('now', '-2 hours'))
+      `).run(shiftId);
+
+      db.prepare(`
+        INSERT INTO drawer_expenses (shift_id, branch_id, cashier_id, cashier_name, category, amount, note, paid_to, created_at)
+        VALUES (?, 1, 2, 'Majid Mashwani (Cashier)', 'Tea & Refreshments (Chaye Kharcha)', 250, 'Shop tea and biscuits for customer meeting', 'Kumber Hotel', datetime('now', '-1 hour'))
+      `).run(shiftId);
+
+      // Link today's sales to this shift
+      db.prepare(`
+        UPDATE sales SET shift_id = ? WHERE branch_id = 1 AND DATE(sale_date) = DATE('now')
+      `).run(shiftId);
+
+      // Update shift totals
+      const expSum = db.prepare('SELECT SUM(amount) as sum FROM drawer_expenses WHERE shift_id = ?').get(shiftId) as any;
+      db.prepare('UPDATE cash_drawer_shifts SET drawer_expenses_amount = ? WHERE id = ?').run(expSum?.sum || 850, shiftId);
+    }
+
+    console.log('Multi-branch setup, stock distribution, and audit synchronization completed.');
+  } catch (error) {
+    console.error('Error synchronizing branches and branch stock:', error);
   }
 }
 
@@ -403,7 +930,7 @@ function seedInitialData() {
   const cashierHash = bcrypt.hashSync('cashier123', salt);
 
   const insertUser = db.prepare('INSERT INTO users (name, username, email, password_hash, role_id, status) VALUES (?, ?, ?, ?, ?, ?)');
-  insertUser.run('Imtiaz Ali (Owner)', 'admin', 'imtiaz@pakistanmaterials.pk', adminHash, 1, 'active');
+  insertUser.run('Imtiaz Ali (Owner)', 'admin', 'imtayazautos@gmail.com', adminHash, 1, 'active');
   insertUser.run('Majid Mashwani (Cashier)', 'cashier', 'majid@pakistanmaterials.pk', cashierHash, 2, 'active');
 
   // 3. Settings
@@ -411,10 +938,10 @@ function seedInitialData() {
   insertSetting.run('store_name', 'Pakistan Building Materials & paint store');
   insertSetting.run('owner_name', 'Imtiaz Ali');
   insertSetting.run('address', 'Kumber Bazar Lower Dir Maidan');
-  insertSetting.run('phone', '+92 300 5936652 / +92 305 9632244');
+  insertSetting.run('phone', '+92 300 5936652 / +92 300 1801818');
   insertSetting.run('phone_primary', '+92 300 5936652');
-  insertSetting.run('phone_secondary', '+92 305 9632244');
-  insertSetting.run('email', 'sales@pakistanmaterials.pk');
+  insertSetting.run('phone_secondary', '+92 300 1801818');
+  insertSetting.run('email', 'imtayazautos@gmail.com');
   insertSetting.run('currency', 'Rs.');
   insertSetting.run('invoice_prefix', 'INV-');
   insertSetting.run('tax_rate', '0');
@@ -440,7 +967,16 @@ function seedInitialData() {
   insertSub.run(2, 'Commode & WC Sets');
   insertSub.run(3, 'Bathroom Taps & Mixers');
   insertSub.run(3, 'Shower Heads & Columns');
-  insertSub.run(4, 'Portland Cement 50kg');
+  insertSub.run(4, 'Cherat Cement');
+  insertSub.run(4, 'Fauji Cement (FCCL)');
+  insertSub.run(4, 'Lucky Cement');
+  insertSub.run(4, 'Bestway Cement');
+  insertSub.run(4, 'D.G. Khan Cement (DGKC)');
+  insertSub.run(4, 'Maple Leaf Cement');
+  insertSub.run(4, 'Falcon Cement');
+  insertSub.run(4, 'Kohat Cement');
+  insertSub.run(4, 'Pioneer Cement');
+  insertSub.run(4, 'Power Cement');
   insertSub.run(5, 'Overhead Water Tanks');
   insertSub.run(6, 'Brass Gate & Ball Valves');
   insertSub.run(6, 'Hand Tools & Trowels');

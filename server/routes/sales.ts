@@ -16,7 +16,9 @@ salesRouter.get('/', (req: Request, res: Response): any => {
       search = '',
       payment_status,
       payment_method,
+      delivery_status,
       customer_id,
+      branch_id,
       date_from,
       date_to,
       limit = '50',
@@ -27,6 +29,9 @@ salesRouter.get('/', (req: Request, res: Response): any => {
       SELECT 
         s.id,
         s.invoice_number,
+        s.branch_id,
+        b.name as branch_name,
+        b.code as branch_code,
         s.customer_id,
         c.name as customer_name,
         c.phone as customer_phone,
@@ -36,17 +41,25 @@ salesRouter.get('/', (req: Request, res: Response): any => {
         s.tax_amount,
         s.discount_amount,
         s.grand_total,
+        COALESCE(s.original_grand_total, s.grand_total + COALESCE(s.returned_amount, 0)) as original_grand_total,
+        COALESCE(s.net_total, s.grand_total) as net_total,
+        COALESCE(s.returned_amount, 0) as returned_amount,
         ${isAdmin ? 's.cogs_total, s.gross_profit,' : '0 as cogs_total, 0 as gross_profit,'}
         s.paid_amount,
         s.due_amount,
         s.payment_method,
         s.payment_status,
+        COALESCE(s.delivery_status, 'DELIVERED') as delivery_status,
+        (SELECT SUM(si.quantity) FROM sale_items si WHERE si.sale_id = s.id) as total_purchased_qty,
+        (SELECT SUM(COALESCE(si.delivered_quantity, si.quantity)) FROM sale_items si WHERE si.sale_id = s.id) as total_delivered_qty,
+        (SELECT SUM(MAX(0, si.quantity - COALESCE(si.returned_quantity, 0) - COALESCE(si.delivered_quantity, si.quantity))) FROM sale_items si WHERE si.sale_id = s.id) as total_remaining_qty,
         s.cashier_id,
-        u.name as cashier_name,
+        COALESCE(s.cashier_name, u.name, 'Terminal') as cashier_name,
         (SELECT COUNT(*) FROM sale_items si WHERE si.sale_id = s.id) as items_count
       FROM sales s
       LEFT JOIN customers c ON s.customer_id = c.id
       LEFT JOIN users u ON s.cashier_id = u.id
+      LEFT JOIN branches b ON s.branch_id = b.id
       WHERE 1=1
     `;
     const params: any[] = [];
@@ -57,9 +70,19 @@ salesRouter.get('/', (req: Request, res: Response): any => {
       params.push(searchPattern, searchPattern, searchPattern);
     }
 
+    if (branch_id && branch_id !== 'all') {
+      query += ` AND s.branch_id = ?`;
+      params.push(Number(branch_id));
+    }
+
     if (payment_status && payment_status !== 'ALL') {
       query += ` AND s.payment_status = ?`;
       params.push(payment_status);
+    }
+
+    if (delivery_status && delivery_status !== 'ALL') {
+      query += ` AND s.delivery_status = ?`;
+      params.push(delivery_status);
     }
 
     if (payment_method && payment_method !== 'ALL') {
@@ -125,14 +148,23 @@ salesRouter.get('/:id', (req: Request, res: Response): any => {
       .prepare(`
         SELECT 
           s.*,
+          COALESCE(s.original_grand_total, s.grand_total + COALESCE(s.returned_amount, 0)) as original_grand_total,
+          COALESCE(s.net_total, s.grand_total) as net_total,
+          COALESCE(s.returned_amount, 0) as returned_amount,
           c.name as customer_name,
           c.phone as customer_phone,
           c.address as customer_address,
           c.outstanding_balance as customer_current_balance,
-          u.name as cashier_name
+          c.is_walk_in,
+          COALESCE(s.cashier_name, u.name, 'Terminal') as cashier_name,
+          b.name as branch_name,
+          b.code as branch_code,
+          b.address as branch_address,
+          b.phone as branch_phone
         FROM sales s
         LEFT JOIN customers c ON s.customer_id = c.id
         LEFT JOIN users u ON s.cashier_id = u.id
+        LEFT JOIN branches b ON s.branch_id = b.id
         WHERE s.id = ?
       `)
       .get(saleId) as any;
@@ -150,13 +182,44 @@ salesRouter.get('/:id', (req: Request, res: Response): any => {
           p.sku,
           p.unit,
           si.quantity,
+          COALESCE(si.delivered_quantity, si.quantity) as delivered_quantity,
+          MAX(0, si.quantity - COALESCE(si.returned_quantity, 0) - COALESCE(si.delivered_quantity, si.quantity)) as remaining_delivery,
           si.unit_price,
           ${isAdmin ? 'si.unit_cost, si.line_profit,' : '0 as unit_cost, 0 as line_profit,'}
           si.discount,
-          si.line_total
+          si.line_total,
+          COALESCE(si.returned_quantity, 0) as returned_quantity,
+          COALESCE(si.remaining_quantity, si.quantity - COALESCE(si.returned_quantity, 0)) as remaining_quantity
         FROM sale_items si
         LEFT JOIN products p ON si.product_id = p.id
         WHERE si.sale_id = ?
+      `)
+      .all(saleId);
+
+    const returns = db
+      .prepare(`
+        SELECT 
+          sr.*,
+          u.name as processed_by_name
+        FROM sales_returns sr
+        LEFT JOIN users u ON sr.processed_by = u.id
+        WHERE sr.sale_id = ?
+        ORDER BY sr.id DESC
+      `)
+      .all(saleId);
+
+    const deliveryLogs = db
+      .prepare(`
+        SELECT 
+          sdl.*,
+          p.name as product_name,
+          u.name as delivered_by_name
+        FROM sale_delivery_logs sdl
+        LEFT JOIN sale_items si ON sdl.sale_item_id = si.id
+        LEFT JOIN products p ON si.product_id = p.id
+        LEFT JOIN users u ON sdl.recorded_by = u.id
+        WHERE sdl.sale_id = ?
+        ORDER BY sdl.id DESC
       `)
       .all(saleId);
 
@@ -172,6 +235,8 @@ salesRouter.get('/:id', (req: Request, res: Response): any => {
       data: {
         ...sale,
         items,
+        returns,
+        delivery_logs: deliveryLogs,
         settings,
       },
     });
@@ -194,6 +259,7 @@ salesRouter.post('/', (req: Request, res: Response): any => {
 
     const {
       customer_id = 1, // Default to Walk-in if not provided
+      branch_id,
       items,
       discount_amount = 0,
       tax_amount = 0,
@@ -205,6 +271,14 @@ salesRouter.post('/', (req: Request, res: Response): any => {
     if (!items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ success: false, message: 'Cart must contain at least one item.' });
     }
+
+    // Determine target branch
+    const targetBranchId = Number(branch_id) || session.branchId || 1;
+    const branch = (db.prepare('SELECT id, name, code FROM branches WHERE id = ?').get(targetBranchId) as any)
+      || { id: 1, name: 'Main Store & Central Warehouse', code: 'BR-01' };
+
+    const cashierUser = db.prepare('SELECT name FROM users WHERE id = ?').get(session.userId) as any;
+    const cashierName = cashierUser?.name || 'Terminal Cashier';
 
     // 1. Fetch customer
     const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(Number(customer_id)) as any;
@@ -233,6 +307,7 @@ salesRouter.post('/', (req: Request, res: Response): any => {
       sku: string;
       unit: string;
       quantity: number;
+      deliveredQuantity: number;
       unitPrice: number;
       unitCost: number;
       discount: number;
@@ -261,13 +336,18 @@ salesRouter.post('/', (req: Request, res: Response): any => {
       }
 
       const price = !isNaN(unitPrice) && unitPrice > 0 ? unitPrice : product.selling_price;
-      const lineTotal = Math.max(0, qty * price - lineDisc);
+      const lineTotal = Math.max(0, Math.round((qty * price - lineDisc) * 100) / 100);
       const unitCost = product.purchase_price || 0;
-      const cogs = qty * unitCost;
-      const profit = lineTotal - cogs;
+      const cogs = Math.round(qty * unitCost * 100) / 100;
+      const profit = Math.round((lineTotal - cogs) * 100) / 100;
 
-      calculatedSubtotal += lineTotal;
-      calculatedCogs += cogs;
+      const deliveredQtyInput = item.delivered_quantity !== undefined && item.delivered_quantity !== null
+        ? Number(item.delivered_quantity)
+        : qty;
+      const deliveredQuantity = isNaN(deliveredQtyInput) ? qty : Math.max(0, Math.min(qty, deliveredQtyInput));
+
+      calculatedSubtotal = Math.round((calculatedSubtotal + lineTotal) * 100) / 100;
+      calculatedCogs = Math.round((calculatedCogs + cogs) * 100) / 100;
 
       validatedItems.push({
         productId: product.id,
@@ -275,6 +355,7 @@ salesRouter.post('/', (req: Request, res: Response): any => {
         sku: product.sku,
         unit: product.unit,
         quantity: qty,
+        deliveredQuantity,
         unitPrice: price,
         unitCost,
         discount: lineDisc,
@@ -285,14 +366,30 @@ salesRouter.post('/', (req: Request, res: Response): any => {
       });
     }
 
-    const orderDiscount = Math.max(0, Number(discount_amount) || 0);
-    const orderTax = Math.max(0, Number(tax_amount) || 0);
-    const grandTotal = Math.max(0, calculatedSubtotal - orderDiscount + orderTax);
-    const grossProfit = grandTotal - calculatedCogs;
+    // Determine overall delivery status for invoice
+    let totalPurchasedUnits = 0;
+    let totalDeliveredUnits = 0;
+    for (const it of validatedItems) {
+      totalPurchasedUnits += it.quantity;
+      totalDeliveredUnits += it.deliveredQuantity;
+    }
+    let deliveryStatus: 'DELIVERED' | 'PARTIAL' | 'PENDING' = 'DELIVERED';
+    if (totalDeliveredUnits >= totalPurchasedUnits) {
+      deliveryStatus = 'DELIVERED';
+    } else if (totalDeliveredUnits > 0) {
+      deliveryStatus = 'PARTIAL';
+    } else {
+      deliveryStatus = 'PENDING';
+    }
+
+    const orderDiscount = Math.max(0, Math.round((Number(discount_amount) || 0) * 100) / 100);
+    const orderTax = Math.max(0, Math.round((Number(tax_amount) || 0) * 100) / 100);
+    const grandTotal = Math.max(0, Math.round((calculatedSubtotal - orderDiscount + orderTax) * 100) / 100);
+    const grossProfit = Math.round((grandTotal - calculatedCogs) * 100) / 100;
 
     const enteredPaid = Number(paid_amount);
-    const paid = isNaN(enteredPaid) ? 0 : enteredPaid;
-    const due = Math.max(0, grandTotal - paid);
+    const paid = isNaN(enteredPaid) ? 0 : Math.round(enteredPaid * 100) / 100;
+    const due = Math.max(0, Math.round((grandTotal - paid) * 100) / 100);
 
     let paymentStatus: 'PAID' | 'PARTIAL' | 'DUE' = 'PAID';
     if (due <= 0.01) {
@@ -316,21 +413,34 @@ salesRouter.post('/', (req: Request, res: Response): any => {
     let saleId: number;
 
     try {
+      // Check for active open cash drawer shift for this branch
+      const activeShift = db.prepare(`
+        SELECT id FROM cash_drawer_shifts
+        WHERE branch_id = ? AND status = 'OPEN'
+        ORDER BY id DESC LIMIT 1
+      `).get(branch.id) as any;
+      const activeShiftId = activeShift ? activeShift.id : null;
+
       // 5. Insert Sale Record
       const saleResult = db
         .prepare(`
           INSERT INTO sales (
-            invoice_number, customer_id, sale_date, subtotal, tax_amount, discount_amount,
-            grand_total, cogs_total, gross_profit, paid_amount, due_amount,
-            payment_method, payment_status, cashier_id
-          ) VALUES (?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            invoice_number, branch_id, shift_id, cashier_name, customer_id, sale_date, subtotal, tax_amount, discount_amount,
+            grand_total, original_grand_total, net_total, returned_amount, cogs_total, gross_profit, paid_amount, due_amount,
+            payment_method, payment_status, cashier_id, delivery_status
+          ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
         `)
         .run(
           invoiceNumber,
+          branch.id,
+          activeShiftId,
+          cashierName,
           customer.id,
           calculatedSubtotal,
           orderTax,
           orderDiscount,
+          grandTotal,
+          grandTotal,
           grandTotal,
           calculatedCogs,
           grossProfit,
@@ -338,31 +448,73 @@ salesRouter.post('/', (req: Request, res: Response): any => {
           due,
           payment_method,
           paymentStatus,
-          session.userId
+          session.userId,
+          deliveryStatus
         );
 
       saleId = Number(saleResult.lastInsertRowid);
 
-      // 6. Insert Sale Items & Deduct Inventory
+      // Update active shift running amounts if open
+      if (activeShiftId) {
+        if (payment_method === 'Cash') {
+          db.prepare(`
+            UPDATE cash_drawer_shifts
+            SET cash_sales_amount = cash_sales_amount + ?,
+                total_sales_amount = total_sales_amount + ?
+            WHERE id = ?
+          `).run(paid, grandTotal, activeShiftId);
+        } else {
+          db.prepare(`
+            UPDATE cash_drawer_shifts
+            SET other_sales_amount = other_sales_amount + ?,
+                total_sales_amount = total_sales_amount + ?
+            WHERE id = ?
+          `).run(paid, grandTotal, activeShiftId);
+        }
+      }
+
+      // 6. Insert Sale Items & Deduct Inventory (Branch-Wise and Global)
       const insertItemStmt = db.prepare(`
         INSERT INTO sale_items (
-          sale_id, product_id, quantity, unit_cost, unit_price, discount, line_total, line_profit
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          sale_id, product_id, quantity, unit_cost, unit_price, discount, line_total, line_profit, returned_quantity, remaining_quantity, delivered_quantity
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
       `);
 
-      const updateStockStmt = db.prepare(`
-        UPDATE products SET current_stock = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+      const insertDeliveryLogStmt = db.prepare(`
+        INSERT INTO sale_delivery_logs (
+          sale_id, sale_item_id, delivered_quantity, total_delivered_after, remaining_after, notes, recorded_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      const ensureBranchStockStmt = db.prepare(`
+        INSERT INTO branch_stocks (branch_id, product_id, current_stock, minimum_stock, updated_at)
+        VALUES (?, ?, 0, 5, CURRENT_TIMESTAMP)
+        ON CONFLICT(branch_id, product_id) DO NOTHING
+      `);
+
+      const deductBranchStockStmt = db.prepare(`
+        UPDATE branch_stocks
+        SET current_stock = current_stock - ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE branch_id = ? AND product_id = ?
+      `);
+
+      const deductGlobalProductStockStmt = db.prepare(`
+        UPDATE products 
+        SET current_stock = current_stock - ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
       `);
 
       const insertTxStmt = db.prepare(`
         INSERT INTO inventory_transactions (
           product_id, transaction_type, reference_type, reference_id,
-          quantity, unit_cost, stock_before, stock_after, notes, created_by
-        ) VALUES (?, 'SALE', 'SALE', ?, ?, ?, ?, ?, ?, ?)
+          quantity, unit_cost, stock_before, stock_after, notes, created_by, branch_id
+        ) VALUES (?, 'SALE', 'SALE', ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       for (const item of validatedItems) {
-        insertItemStmt.run(
+        const itemResult = insertItemStmt.run(
           saleId,
           item.productId,
           item.quantity,
@@ -370,13 +522,32 @@ salesRouter.post('/', (req: Request, res: Response): any => {
           item.unitPrice,
           item.discount,
           item.lineTotal,
-          item.lineProfit
+          item.lineProfit,
+          item.quantity,
+          item.deliveredQuantity
         );
 
-        // Update product stock balance
-        updateStockStmt.run(item.stockAfter, item.productId);
+        const saleItemId = Number(itemResult.lastInsertRowid);
+        if (item.deliveredQuantity > 0) {
+          insertDeliveryLogStmt.run(
+            saleId,
+            saleItemId,
+            item.deliveredQuantity,
+            item.deliveredQuantity,
+            Math.max(0, item.quantity - item.deliveredQuantity),
+            item.deliveredQuantity === item.quantity ? 'Initial full pickup at checkout' : 'Initial partial pickup at checkout',
+            session.userId
+          );
+        }
 
-        // Record stock decrement transaction
+        // Ensure row exists in branch_stocks, then deduct
+        ensureBranchStockStmt.run(branch.id, item.productId);
+        deductBranchStockStmt.run(item.quantity, branch.id, item.productId);
+
+        // Deduct from overall products stock
+        deductGlobalProductStockStmt.run(item.quantity, item.productId);
+
+        // Record stock decrement transaction with branch_id
         insertTxStmt.run(
           item.productId,
           saleId,
@@ -384,8 +555,9 @@ salesRouter.post('/', (req: Request, res: Response): any => {
           item.unitCost,
           item.stockBefore,
           item.stockAfter,
-          `Sale Invoice ${invoiceNumber}`,
-          session.userId
+          `Sale Invoice ${invoiceNumber} at ${branch.name}`,
+          session.userId,
+          branch.id
         );
       }
 
@@ -419,7 +591,7 @@ salesRouter.post('/', (req: Request, res: Response): any => {
       `).run(
         session.userId,
         saleId,
-        `Created invoice ${invoiceNumber} for ${customer.name}. Grand Total: Rs. ${grandTotal.toLocaleString()}, Paid: Rs. ${paid.toLocaleString()}, Due: Rs. ${due.toLocaleString()}`
+        `Created invoice ${invoiceNumber} at ${branch.name} for ${customer.name}. Cashier: ${cashierName}. Grand Total: Rs. ${grandTotal.toLocaleString()}`
       );
 
       db.exec('COMMIT');
@@ -433,14 +605,23 @@ salesRouter.post('/', (req: Request, res: Response): any => {
       .prepare(`
         SELECT 
           s.*,
+          COALESCE(s.original_grand_total, s.grand_total) as original_grand_total,
+          COALESCE(s.net_total, s.grand_total) as net_total,
+          COALESCE(s.returned_amount, 0) as returned_amount,
           c.name as customer_name,
           c.phone as customer_phone,
           c.address as customer_address,
           c.outstanding_balance as customer_current_balance,
-          u.name as cashier_name
+          c.is_walk_in,
+          COALESCE(s.cashier_name, u.name, 'Terminal Cashier') as cashier_name,
+          b.name as branch_name,
+          b.code as branch_code,
+          b.address as branch_address,
+          b.phone as branch_phone
         FROM sales s
         LEFT JOIN customers c ON s.customer_id = c.id
         LEFT JOIN users u ON s.cashier_id = u.id
+        LEFT JOIN branches b ON s.branch_id = b.id
         WHERE s.id = ?
       `)
       .get(saleId) as any;
@@ -451,7 +632,11 @@ salesRouter.post('/', (req: Request, res: Response): any => {
           si.*,
           p.name as product_name,
           p.sku,
-          p.unit
+          p.unit,
+          COALESCE(si.delivered_quantity, si.quantity) as delivered_quantity,
+          MAX(0, si.quantity - COALESCE(si.returned_quantity, 0) - COALESCE(si.delivered_quantity, si.quantity)) as remaining_delivery,
+          COALESCE(si.returned_quantity, 0) as returned_quantity,
+          COALESCE(si.remaining_quantity, si.quantity) as remaining_quantity
         FROM sale_items si
         LEFT JOIN products p ON si.product_id = p.id
         WHERE si.sale_id = ?
@@ -496,6 +681,9 @@ salesRouter.get('/lookup/:identifier', (req: Request, res: Response): any => {
       .prepare(`
         SELECT 
           s.*,
+          COALESCE(s.original_grand_total, s.grand_total + COALESCE(s.returned_amount, 0)) as original_grand_total,
+          COALESCE(s.net_total, s.grand_total) as net_total,
+          COALESCE(s.returned_amount, 0) as returned_amount,
           c.name as customer_name,
           c.phone as customer_phone,
           c.address as customer_address,
@@ -518,6 +706,9 @@ salesRouter.get('/lookup/:identifier', (req: Request, res: Response): any => {
         .prepare(`
           SELECT 
             s.*,
+            COALESCE(s.original_grand_total, s.grand_total + COALESCE(s.returned_amount, 0)) as original_grand_total,
+            COALESCE(s.net_total, s.grand_total) as net_total,
+            COALESCE(s.returned_amount, 0) as returned_amount,
             c.name as customer_name,
             c.phone as customer_phone,
             c.address as customer_address,
@@ -550,6 +741,8 @@ salesRouter.get('/lookup/:identifier', (req: Request, res: Response): any => {
           p.barcode,
           p.unit,
           p.current_stock,
+          COALESCE(si.delivered_quantity, si.quantity) as delivered_quantity,
+          MAX(0, si.quantity - COALESCE(si.returned_quantity, 0) - COALESCE(si.delivered_quantity, si.quantity)) as remaining_delivery,
           COALESCE(si.returned_quantity, 0) as returned_quantity,
           (si.quantity - COALESCE(si.returned_quantity, 0)) as remaining_quantity
         FROM sale_items si
@@ -570,6 +763,21 @@ salesRouter.get('/lookup/:identifier', (req: Request, res: Response): any => {
       `)
       .all(sale.id);
 
+    const deliveryLogs = db
+      .prepare(`
+        SELECT 
+          sdl.*,
+          p.name as product_name,
+          u.name as delivered_by_name
+        FROM sale_delivery_logs sdl
+        LEFT JOIN sale_items si ON sdl.sale_item_id = si.id
+        LEFT JOIN products p ON si.product_id = p.id
+        LEFT JOIN users u ON sdl.recorded_by = u.id
+        WHERE sdl.sale_id = ?
+        ORDER BY sdl.id DESC
+      `)
+      .all(sale.id);
+
     const settingsRows = db.prepare('SELECT key, value FROM settings').all() as any[];
     const settings: Record<string, string> = {};
     for (const r of settingsRows) {
@@ -582,12 +790,233 @@ salesRouter.get('/lookup/:identifier', (req: Request, res: Response): any => {
         ...sale,
         items,
         returns,
+        delivery_logs: deliveryLogs,
         settings,
       },
     });
   } catch (error: any) {
     console.error('Error looking up invoice:', error);
     return res.status(500).json({ success: false, message: 'Failed to search invoice.' });
+  }
+});
+
+// POST /api/sales/:id/delivery - Update delivered item quantities (Customer picking up remaining balance)
+salesRouter.post('/:id/delivery', (req: Request, res: Response): any => {
+  try {
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : undefined;
+    const session = verifySession(token);
+
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Unauthorized. Please log in.' });
+    }
+
+    const saleId = Number(req.params.id);
+    const { deliveries, notes = '' } = req.body;
+
+    if (!deliveries || !Array.isArray(deliveries) || deliveries.length === 0) {
+      return res.status(400).json({ success: false, message: 'Please provide at least one item delivery update.' });
+    }
+
+    const sale = db.prepare('SELECT * FROM sales WHERE id = ?').get(saleId) as any;
+    if (!sale) {
+      return res.status(404).json({ success: false, message: 'Invoice not found.' });
+    }
+
+    db.exec('BEGIN');
+
+    try {
+      const updateItemStmt = db.prepare(`
+        UPDATE sale_items 
+        SET delivered_quantity = ?
+        WHERE id = ? AND sale_id = ?
+      `);
+
+      const logDeliveryStmt = db.prepare(`
+        INSERT INTO sale_delivery_logs (
+          sale_id, sale_item_id, delivered_quantity, total_delivered_after, remaining_after, notes, recorded_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      let totalUpdatedDelta = 0;
+
+      for (const d of deliveries) {
+        const saleItemId = Number(d.sale_item_id);
+        const item = db.prepare('SELECT * FROM sale_items WHERE id = ? AND sale_id = ?').get(saleItemId, saleId) as any;
+        if (!item) continue;
+
+        const maxAvailable = Math.max(0, item.quantity - (item.returned_quantity || 0));
+        const currentDelivered = item.delivered_quantity !== null && item.delivered_quantity !== undefined 
+          ? Number(item.delivered_quantity) 
+          : item.quantity;
+
+        let newTotalDelivered: number;
+
+        if (d.quantity_delivered_now !== undefined) {
+          const qtyNow = Number(d.quantity_delivered_now);
+          if (isNaN(qtyNow) || qtyNow <= 0) continue;
+          newTotalDelivered = Math.min(maxAvailable, currentDelivered + qtyNow);
+        } else if (d.new_total_delivered !== undefined) {
+          const totalVal = Number(d.new_total_delivered);
+          if (isNaN(totalVal) || totalVal < 0) continue;
+          newTotalDelivered = Math.min(maxAvailable, totalVal);
+        } else {
+          continue;
+        }
+
+        const delta = Math.round((newTotalDelivered - currentDelivered) * 100) / 100;
+        if (delta !== 0) {
+          updateItemStmt.run(newTotalDelivered, saleItemId, saleId);
+          const remainingAfter = Math.max(0, maxAvailable - newTotalDelivered);
+          logDeliveryStmt.run(
+            saleId,
+            saleItemId,
+            delta,
+            newTotalDelivered,
+            remainingAfter,
+            d.notes || notes || `Customer picked up ${delta} units`,
+            session.userId
+          );
+          totalUpdatedDelta += delta;
+        }
+      }
+
+      // Check all items for this sale to compute updated overall delivery status
+      const allItems = db.prepare('SELECT quantity, returned_quantity, delivered_quantity FROM sale_items WHERE sale_id = ?').all(saleId) as any[];
+      let totalPurchased = 0;
+      let totalDelivered = 0;
+      let allDelivered = true;
+
+      for (const it of allItems) {
+        const netPurchased = Math.max(0, it.quantity - (it.returned_quantity || 0));
+        const del = it.delivered_quantity !== null && it.delivered_quantity !== undefined 
+          ? Math.min(netPurchased, Number(it.delivered_quantity)) 
+          : netPurchased;
+        totalPurchased += netPurchased;
+        totalDelivered += del;
+        if (del < netPurchased) {
+          allDelivered = false;
+        }
+      }
+
+      let newStatus: 'DELIVERED' | 'PARTIAL' | 'PENDING' = 'DELIVERED';
+      if (allDelivered || totalDelivered >= totalPurchased) {
+        newStatus = 'DELIVERED';
+      } else if (totalDelivered > 0) {
+        newStatus = 'PARTIAL';
+      } else {
+        newStatus = 'PENDING';
+      }
+
+      db.prepare('UPDATE sales SET delivery_status = ? WHERE id = ?').run(newStatus, saleId);
+
+      // Audit Log
+      db.prepare(`
+        INSERT INTO audit_logs (user_id, action, module, record_id, details)
+        VALUES (?, 'UPDATE_DELIVERY', 'Sales', ?, ?)
+      `).run(
+        session.userId,
+        saleId,
+        `Updated delivery for invoice ${sale.invoice_number}. Status: ${newStatus}. Items delivered: ${totalUpdatedDelta}`
+      );
+
+      db.exec('COMMIT');
+
+      // Return fresh invoice with items and logs
+      const updatedSale = db
+        .prepare(`
+          SELECT 
+            s.*,
+            COALESCE(s.original_grand_total, s.grand_total + COALESCE(s.returned_amount, 0)) as original_grand_total,
+            COALESCE(s.net_total, s.grand_total) as net_total,
+            COALESCE(s.returned_amount, 0) as returned_amount,
+            COALESCE(s.delivery_status, 'DELIVERED') as delivery_status,
+            c.name as customer_name,
+            c.phone as customer_phone,
+            c.address as customer_address,
+            c.outstanding_balance as customer_current_balance,
+            c.is_walk_in,
+            COALESCE(s.cashier_name, u.name, 'Terminal Cashier') as cashier_name,
+            b.name as branch_name,
+            b.code as branch_code,
+            b.address as branch_address,
+            b.phone as branch_phone
+          FROM sales s
+          LEFT JOIN customers c ON s.customer_id = c.id
+          LEFT JOIN users u ON s.cashier_id = u.id
+          LEFT JOIN branches b ON s.branch_id = b.id
+          WHERE s.id = ?
+        `)
+        .get(saleId) as any;
+
+      const updatedItems = db
+        .prepare(`
+          SELECT 
+            si.*,
+            p.name as product_name,
+            p.sku,
+            p.barcode,
+            p.unit,
+            p.current_stock,
+            COALESCE(si.delivered_quantity, si.quantity) as delivered_quantity,
+            MAX(0, si.quantity - COALESCE(si.returned_quantity, 0) - COALESCE(si.delivered_quantity, si.quantity)) as remaining_delivery,
+            COALESCE(si.returned_quantity, 0) as returned_quantity,
+            (si.quantity - COALESCE(si.returned_quantity, 0)) as remaining_quantity
+          FROM sale_items si
+          LEFT JOIN products p ON si.product_id = p.id
+          WHERE si.sale_id = ?
+        `)
+        .all(saleId);
+
+      const deliveryLogsRecord = db
+        .prepare(`
+          SELECT 
+            sdl.*,
+            p.name as product_name,
+            u.name as delivered_by_name
+          FROM sale_delivery_logs sdl
+          LEFT JOIN sale_items si ON sdl.sale_item_id = si.id
+          LEFT JOIN products p ON si.product_id = p.id
+          LEFT JOIN users u ON sdl.recorded_by = u.id
+          WHERE sdl.sale_id = ?
+          ORDER BY sdl.id DESC
+        `)
+        .all(saleId);
+
+      const returnsRecord = db
+        .prepare(`
+          SELECT sr.*, u.name as processed_by_name
+          FROM sales_returns sr
+          LEFT JOIN users u ON sr.processed_by = u.id
+          WHERE sr.sale_id = ?
+          ORDER BY sr.id DESC
+        `)
+        .all(saleId);
+
+      const settingsRowsAll = db.prepare('SELECT key, value FROM settings').all() as any[];
+      const settingsMap: Record<string, string> = {};
+      for (const r of settingsRowsAll) {
+        settingsMap[r.key] = r.value;
+      }
+
+      return res.json({
+        success: true,
+        message: 'Delivery pickup saved successfully. Remaining item balances updated.',
+        data: {
+          ...updatedSale,
+          items: updatedItems,
+          delivery_logs: deliveryLogsRecord,
+          returns: returnsRecord,
+          settings: settingsMap,
+        },
+      });
+    } catch (err: any) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
+  } catch (error: any) {
+    console.error('Error updating delivery status:', error);
+    return res.status(500).json({ success: false, message: error.message || 'Failed to update delivery.' });
   }
 });
 
@@ -895,20 +1324,40 @@ salesRouter.post('/:id/returns', (req: Request, res: Response): any => {
         ) VALUES (?, ?, ?, ?, ?, ?)
       `);
 
-      const updateStockStmt = db.prepare(`
-        UPDATE products SET current_stock = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+      const saleBranchId = sale.branch_id || 1;
+
+      const ensureBranchStockStmt = db.prepare(`
+        INSERT INTO branch_stocks (branch_id, product_id, current_stock, minimum_stock, updated_at)
+        VALUES (?, ?, 0, 5, CURRENT_TIMESTAMP)
+        ON CONFLICT(branch_id, product_id) DO NOTHING
+      `);
+
+      const restockBranchStockStmt = db.prepare(`
+        UPDATE branch_stocks
+        SET current_stock = current_stock + ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE branch_id = ? AND product_id = ?
+      `);
+
+      const restockGlobalProductStockStmt = db.prepare(`
+        UPDATE products 
+        SET current_stock = current_stock + ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
       `);
 
       const insertTxStmt = db.prepare(`
         INSERT INTO inventory_transactions (
           product_id, transaction_type, reference_type, reference_id,
-          quantity, unit_cost, stock_before, stock_after, notes, created_by
-        ) VALUES (?, 'SALE_RETURN', 'SALE_RETURN', ?, ?, ?, ?, ?, ?, ?)
+          quantity, unit_cost, stock_before, stock_after, notes, created_by, branch_id
+        ) VALUES (?, 'SALE_RETURN', 'SALE_RETURN', ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       const updateSaleItemStmt = db.prepare(`
         UPDATE sale_items 
-        SET returned_quantity = COALESCE(returned_quantity, 0) + ?
+        SET 
+          returned_quantity = COALESCE(returned_quantity, 0) + ?,
+          remaining_quantity = MAX(0, quantity - (COALESCE(returned_quantity, 0) + ?))
         WHERE id = ?
       `);
 
@@ -922,10 +1371,14 @@ salesRouter.post('/:id/returns', (req: Request, res: Response): any => {
           item.refundLineTotal
         );
 
-        // Restock product inventory
-        updateStockStmt.run(item.stockAfter, item.productId);
+        // Restock branch inventory
+        ensureBranchStockStmt.run(saleBranchId, item.productId);
+        restockBranchStockStmt.run(item.returnQty, saleBranchId, item.productId);
 
-        // Record restock in inventory_transactions
+        // Restock global product current_stock
+        restockGlobalProductStockStmt.run(item.returnQty, item.productId);
+
+        // Record restock in inventory_transactions with branch_id
         insertTxStmt.run(
           item.productId,
           returnId,
@@ -934,23 +1387,58 @@ salesRouter.post('/:id/returns', (req: Request, res: Response): any => {
           item.stockBefore,
           item.stockAfter,
           `Return Slip ${returnNumber} for Invoice ${sale.invoice_number} (${item.reason})`,
-          session.userId
+          session.userId,
+          saleBranchId
         );
 
-        // Mark quantity returned in sale_items
-        updateSaleItemStmt.run(item.returnQty, item.saleItemId);
+        // Mark quantity returned & remaining in sale_items
+        updateSaleItemStmt.run(item.returnQty, item.returnQty, item.saleItemId);
       }
 
-      // 3. Adjust Sale Financials
-      const newDueAmount = Math.max(0, currentDue - ledgerCreditAmount);
-      const newPaymentStatus = newDueAmount <= 0.01 ? 'PAID' : (sale.paid_amount > 0 ? 'PARTIAL' : 'DUE');
-      const newReturnedAmount = (sale.returned_amount || 0) + totalRefundAmount;
+      // 3. Adjust Sale Financials (Recalculate Net Total, Grand Total, Due, and Paid)
+      const originalGrandTotal = Number(sale.original_grand_total || (sale.grand_total + (sale.returned_amount || 0)));
+      const newReturnedAmount = Number((sale.returned_amount || 0) + totalRefundAmount);
+      // Net Payable Amount = Original Total - Total Returned Items Value
+      const newNetTotal = Math.max(0, Math.round((originalGrandTotal - newReturnedAmount) * 100) / 100);
+      const newGrandTotal = newNetTotal;
+
+      const newDueAmount = Math.max(0, Math.round((currentDue - ledgerCreditAmount) * 100) / 100);
+      const newPaidAmount = Math.max(0, Math.round((newNetTotal - newDueAmount) * 100) / 100);
+      const newPaymentStatus = newDueAmount <= 0.01 ? 'PAID' : (newPaidAmount > 0 ? 'PARTIAL' : 'DUE');
+
+      // Adjust COGS and Gross Profit
+      let totalReturnedCogs = 0;
+      for (const item of validatedReturns) {
+        totalReturnedCogs += item.returnQty * item.unitCost;
+      }
+      const newCogs = Math.max(0, Math.round(((sale.cogs_total || 0) - totalReturnedCogs) * 100) / 100);
+      const newGrossProfit = Math.max(0, Math.round((newNetTotal - newCogs) * 100) / 100);
 
       db.prepare(`
         UPDATE sales
-        SET due_amount = ?, returned_amount = ?, payment_status = ?
+        SET 
+          original_grand_total = COALESCE(original_grand_total, ?),
+          grand_total = ?,
+          net_total = ?,
+          returned_amount = ?,
+          paid_amount = ?,
+          due_amount = ?,
+          payment_status = ?,
+          cogs_total = ?,
+          gross_profit = ?
         WHERE id = ?
-      `).run(newDueAmount, newReturnedAmount, newPaymentStatus, saleId);
+      `).run(
+        originalGrandTotal,
+        newGrandTotal,
+        newNetTotal,
+        newReturnedAmount,
+        newPaidAmount,
+        newDueAmount,
+        newPaymentStatus,
+        newCogs,
+        newGrossProfit,
+        saleId
+      );
 
       // 4. Adjust Customer Ledger if non-walk-in or if ledger was credited
       if (ledgerCreditAmount > 0) {
@@ -962,6 +1450,22 @@ salesRouter.post('/:id/returns', (req: Request, res: Response): any => {
             SET outstanding_balance = ?, updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
           `).run(newCustOutstanding, customer.id);
+        }
+      }
+
+      // If cash was refunded, deduct from active branch cash drawer shift
+      if (cashRefundAmount > 0) {
+        const activeShift = db.prepare(`
+          SELECT id FROM cash_drawer_shifts
+          WHERE branch_id = ? AND status = 'OPEN'
+          ORDER BY id DESC LIMIT 1
+        `).get(saleBranchId) as any;
+        if (activeShift) {
+          db.prepare(`
+            UPDATE cash_drawer_shifts
+            SET cash_refunds_amount = cash_refunds_amount + ?
+            WHERE id = ?
+          `).run(cashRefundAmount, activeShift.id);
         }
       }
 
@@ -986,6 +1490,9 @@ salesRouter.post('/:id/returns', (req: Request, res: Response): any => {
       .prepare(`
         SELECT 
           s.*,
+          COALESCE(s.original_grand_total, s.grand_total + COALESCE(s.returned_amount, 0)) as original_grand_total,
+          COALESCE(s.net_total, s.grand_total) as net_total,
+          COALESCE(s.returned_amount, 0) as returned_amount,
           c.name as customer_name,
           c.phone as customer_phone,
           c.outstanding_balance as customer_current_balance,

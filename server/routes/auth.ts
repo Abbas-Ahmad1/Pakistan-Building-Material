@@ -5,20 +5,48 @@ import { db } from '../db/database.js';
 export const authRouter = Router();
 
 // In-memory token store mapped to user session
-const sessionStore = new Map<string, { userId: number; role: string; expiresAt: number }>();
+export interface SessionData {
+  userId: number;
+  role: string;
+  branchId: number;
+  branchName: string;
+  branchCode: string;
+  expiresAt: number;
+}
 
-function generateToken(userId: number, role: string): string {
+const sessionStore = new Map<string, SessionData>();
+
+function getBranchInfo(branchId?: number) {
+  let branch: any = null;
+  if (branchId) {
+    branch = db.prepare('SELECT id, name, code FROM branches WHERE id = ?').get(branchId);
+  }
+  if (!branch) {
+    branch = db.prepare('SELECT id, name, code FROM branches WHERE is_main = 1 LIMIT 1').get();
+  }
+  if (!branch) {
+    branch = db.prepare('SELECT id, name, code FROM branches ORDER BY id ASC LIMIT 1').get();
+  }
+  return branch || { id: 1, name: 'Main Store & Central Warehouse', code: 'BR-01' };
+}
+
+function generateToken(userId: number, role: string, branchId?: number): { token: string; branch: { id: number; name: string; code: string } } {
   const token = `tok_${userId}_${Date.now()}_${Math.random().toString(36).substring(2, 12)}`;
+  const branch = getBranchInfo(branchId);
+
   // 7-day session
   sessionStore.set(token, {
     userId,
     role,
+    branchId: branch.id,
+    branchName: branch.name,
+    branchCode: branch.code,
     expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
   });
-  return token;
+  return { token, branch };
 }
 
-export function verifySession(token?: string) {
+export function verifySession(token?: string): SessionData | null {
   if (!token) return null;
   const session = sessionStore.get(token);
   if (!session) return null;
@@ -29,10 +57,20 @@ export function verifySession(token?: string) {
   return session;
 }
 
+// GET /api/auth/branches - list active branches for login dropdown
+authRouter.get('/branches', (_req: Request, res: Response): any => {
+  try {
+    const branches = db.prepare(`SELECT id, name, code, address, phone, is_main, status FROM branches WHERE status = 'ACTIVE' ORDER BY is_main DESC, id ASC`).all();
+    return res.json({ success: true, data: branches });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: 'Failed to fetch branches.' });
+  }
+});
+
 // POST /api/auth/login
 authRouter.post('/login', (req: Request, res: Response): any => {
   try {
-    const { username, password } = req.body;
+    const { username, password, branch_id } = req.body;
 
     if (!username || !password) {
       return res.status(400).json({
@@ -43,7 +81,7 @@ authRouter.post('/login', (req: Request, res: Response): any => {
 
     const user = db
       .prepare(`
-        SELECT u.id, u.name, u.username, u.email, u.password_hash, u.status, r.name as role
+        SELECT u.id, u.name, u.username, u.email, u.password_hash, u.status, u.branch_id, r.name as role
         FROM users u
         JOIN roles r ON u.role_id = r.id
         WHERE u.username = ? OR u.email = ?
@@ -75,13 +113,15 @@ authRouter.post('/login', (req: Request, res: Response): any => {
       });
     }
 
-    const token = generateToken(user.id, user.role);
+    // Determine target branch
+    const selectedBranchId = branch_id ? Number(branch_id) : (user.branch_id || 1);
+    const { token, branch } = generateToken(user.id, user.role, selectedBranchId);
 
     // Audit log
     db.prepare(`
       INSERT INTO audit_logs (user_id, action, module, record_id, details)
       VALUES (?, 'LOGIN_SUCCESS', 'Auth', ?, ?)
-    `).run(user.id, user.id, `User logged in with role ${user.role}`);
+    `).run(user.id, user.id, `User logged in with role ${user.role} at Branch: ${branch.name} (${branch.code})`);
 
     return res.json({
       success: true,
@@ -95,6 +135,9 @@ authRouter.post('/login', (req: Request, res: Response): any => {
           email: user.email,
           role: user.role,
           status: user.status,
+          branch_id: branch.id,
+          branch_name: branch.name,
+          branch_code: branch.code,
         },
       },
     });
@@ -137,6 +180,9 @@ authRouter.get('/me', (req: Request, res: Response): any => {
       });
     }
 
+    // Get current branch from session or db
+    const branch = getBranchInfo(session.branchId);
+
     return res.json({
       success: true,
       data: {
@@ -147,6 +193,9 @@ authRouter.get('/me', (req: Request, res: Response): any => {
           email: user.email,
           role: user.role,
           status: user.status,
+          branch_id: branch.id,
+          branch_name: branch.name,
+          branch_code: branch.code,
         },
       },
     });
@@ -155,6 +204,49 @@ authRouter.get('/me', (req: Request, res: Response): any => {
       success: false,
       message: 'Failed to verify session.',
     });
+  }
+});
+
+// POST /api/auth/switch-branch
+authRouter.post('/switch-branch', (req: Request, res: Response): any => {
+  try {
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : undefined;
+    const session = verifySession(token);
+
+    if (!session) {
+      return res.status(401).json({ success: false, message: 'Unauthorized.' });
+    }
+
+    const { branch_id } = req.body;
+    if (!branch_id) {
+      return res.status(400).json({ success: false, message: 'Branch ID required.' });
+    }
+
+    const branch = getBranchInfo(Number(branch_id));
+    session.branchId = branch.id;
+    session.branchName = branch.name;
+    session.branchCode = branch.code;
+
+    // Update user default branch in DB as well
+    db.prepare('UPDATE users SET branch_id = ? WHERE id = ?').run(branch.id, session.userId);
+
+    db.prepare(`
+      INSERT INTO audit_logs (user_id, action, module, record_id, details)
+      VALUES (?, 'SWITCH_BRANCH', 'Auth', ?, ?)
+    `).run(session.userId, branch.id, `User switched terminal to Branch: ${branch.name} (${branch.code})`);
+
+    return res.json({
+      success: true,
+      message: `Switched active branch to ${branch.name}`,
+      data: {
+        branch_id: branch.id,
+        branch_name: branch.name,
+        branch_code: branch.code,
+      },
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: 'Failed to switch branch.' });
   }
 });
 

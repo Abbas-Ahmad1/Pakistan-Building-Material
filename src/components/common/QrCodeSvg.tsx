@@ -17,7 +17,8 @@ export const QrCodeSvg: React.FC<QrCodeSvgProps> = ({
   className = '',
   label,
 }) => {
-  if (!value) return null;
+  const safeValue = String(value || '').trim();
+  if (!safeValue) return null;
 
   const gridSize = 21; // Standard Version 1 QR matrix (21x21)
   const matrix: boolean[][] = Array(gridSize)
@@ -54,8 +55,8 @@ export const QrCodeSvg: React.FC<QrCodeSvgProps> = ({
 
   // Generate deterministic bit pattern based on hash of the input value
   let hash = 0;
-  for (let i = 0; i < value.length; i++) {
-    hash = (hash * 31 + value.charCodeAt(i)) & 0xffffffff;
+  for (let i = 0; i < safeValue.length; i++) {
+    hash = (hash * 31 + safeValue.charCodeAt(i)) & 0xffffffff;
   }
 
   let bitIndex = 0;

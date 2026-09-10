@@ -21,14 +21,19 @@ import {
   RotateCcw,
   QrCode,
   ScanLine,
+  Wallet,
 } from 'lucide-react';
 import { apiRequest } from '../services/api';
-import { Product, Customer, CartItem, Sale, Category } from '../types';
+import { Product, Customer, CartItem, Sale, Category, CashDrawerShift } from '../types';
 import { ReceiptModal } from '../components/pos/ReceiptModal';
 import { InvoiceLookupModal } from '../components/pos/InvoiceLookupModal';
+import { CashDrawerModal } from '../components/pos/CashDrawerModal';
 import { BarcodeSvg } from '../components/common/BarcodeSvg';
+import { useAuth } from '../context/AuthContext';
 
 export const PosTerminal: React.FC = () => {
+  const { user, branches, currentBranch, switchBranch } = useAuth();
+
   // Products & Categories
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -67,6 +72,33 @@ export const PosTerminal: React.FC = () => {
   const [isScanningInvoice, setIsScanningInvoice] = useState(false);
   const [recentInvoices, setRecentInvoices] = useState<{ id: number; invoice_number: string; payment_status: string }[]>([]);
   const barcodeInputRef = useRef<HTMLInputElement>(null);
+
+  // Cash Drawer Shift State
+  const [activeShift, setActiveShift] = useState<CashDrawerShift | null>(null);
+  const [showCashDrawerModal, setShowCashDrawerModal] = useState(false);
+  const [isLoadingShift, setIsLoadingShift] = useState(false);
+
+  // Fetch active cash drawer shift
+  const fetchShiftData = async () => {
+    const branchId = user?.branch_id || currentBranch?.id || 1;
+    setIsLoadingShift(true);
+    try {
+      const res = await apiRequest<{
+        hasActiveShift: boolean;
+        shift?: CashDrawerShift;
+      }>(`/api/cash-drawer/current?branch_id=${branchId}`);
+
+      if (res.success && res.data?.hasActiveShift && res.data?.shift) {
+        setActiveShift(res.data.shift);
+      } else {
+        setActiveShift(null);
+      }
+    } catch (_) {
+      setActiveShift(null);
+    } finally {
+      setIsLoadingShift(false);
+    }
+  };
 
   // Fetch initial products, categories, customers
   const fetchData = async () => {
@@ -109,6 +141,7 @@ export const PosTerminal: React.FC = () => {
 
   useEffect(() => {
     fetchData();
+    fetchShiftData();
   }, []);
 
   // Quick Barcode Scanning Handler for receipts
@@ -138,12 +171,15 @@ export const PosTerminal: React.FC = () => {
     }
   };
 
-  // Keyboard shortcut Ctrl+B or F2 to focus barcode scanner input
+  // Keyboard shortcut Ctrl+B or F2 to focus barcode scanner input, F4 for cash drawer
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey && e.key.toLowerCase() === 'b') || e.key === 'F2') {
         e.preventDefault();
         barcodeInputRef.current?.focus();
+      } else if (e.key === 'F4') {
+        e.preventDefault();
+        setShowCashDrawerModal((prev) => !prev);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -181,32 +217,35 @@ export const PosTerminal: React.FC = () => {
         return prev.map((item) => {
           if (item.product.id === product.id) {
             const newQty = item.quantity + 1;
+            const wasFullyDelivered = (item.delivered_quantity ?? item.quantity) >= item.quantity;
             return {
               ...item,
               quantity: newQty,
-              lineTotal: Math.max(0, newQty * item.unitPrice - item.discount),
+              delivered_quantity: wasFullyDelivered ? newQty : (item.delivered_quantity ?? newQty),
+              lineTotal: Math.max(0, Math.round((newQty * item.unitPrice - item.discount) * 100) / 100),
             };
           }
           return item;
         });
       }
 
-      // Add new item with default retail price
+      // Add new item with default retail price and 100% picked up by default
       return [
         ...prev,
         {
           product,
           quantity: 1,
+          delivered_quantity: 1,
           unitPrice: product.selling_price,
           priceTier: 'retail',
           discount: 0,
-          lineTotal: product.selling_price,
+          lineTotal: Math.round(product.selling_price * 100) / 100,
         },
       ];
     });
   };
 
-  // Update quantity
+  // Update total purchased quantity
   const updateQuantity = (productId: number, qty: number) => {
     if (qty <= 0) {
       removeFromCart(productId);
@@ -216,10 +255,29 @@ export const PosTerminal: React.FC = () => {
     setCart((prev) =>
       prev.map((item) => {
         if (item.product.id === productId) {
+          const wasFullyDelivered = (item.delivered_quantity ?? item.quantity) >= item.quantity;
+          const newDelivered = wasFullyDelivered ? qty : Math.min(qty, item.delivered_quantity ?? qty);
           return {
             ...item,
             quantity: qty,
-            lineTotal: Math.max(0, qty * item.unitPrice - item.discount),
+            delivered_quantity: newDelivered,
+            lineTotal: Math.max(0, Math.round((qty * item.unitPrice - item.discount) * 100) / 100),
+          };
+        }
+        return item;
+      })
+    );
+  };
+
+  // Update delivered / picked up quantity
+  const updateDeliveredQuantity = (productId: number, deliveredQty: number) => {
+    setCart((prev) =>
+      prev.map((item) => {
+        if (item.product.id === productId) {
+          const clamped = Math.max(0, Math.min(item.quantity, deliveredQty));
+          return {
+            ...item,
+            delivered_quantity: clamped,
           };
         }
         return item;
@@ -241,7 +299,7 @@ export const PosTerminal: React.FC = () => {
             ...item,
             priceTier: nextTier,
             unitPrice: nextPrice,
-            lineTotal: Math.max(0, item.quantity * nextPrice - item.discount),
+            lineTotal: Math.max(0, Math.round((item.quantity * nextPrice - item.discount) * 100) / 100),
           };
         }
         return item;
@@ -256,12 +314,24 @@ export const PosTerminal: React.FC = () => {
 
   // Cart Calculations
   const cartSubtotal = useMemo(() => {
-    return cart.reduce((sum, item) => sum + item.lineTotal, 0);
+    return Math.round(cart.reduce((sum, item) => sum + item.lineTotal, 0) * 100) / 100;
   }, [cart]);
 
   const grandTotal = useMemo(() => {
-    return Math.max(0, cartSubtotal - (Number(orderDiscount) || 0));
+    return Math.max(0, Math.round((cartSubtotal - (Number(orderDiscount) || 0)) * 100) / 100);
   }, [cartSubtotal, orderDiscount]);
+
+  // Delivery Units Summary for Cart
+  const cartDeliveryTotals = useMemo(() => {
+    let purchased = 0;
+    let delivered = 0;
+    for (const item of cart) {
+      purchased += item.quantity;
+      delivered += (item.delivered_quantity !== undefined ? item.delivered_quantity : item.quantity);
+    }
+    const remaining = Math.max(0, purchased - delivered);
+    return { purchased, delivered, remaining };
+  }, [cart]);
 
   // Sync paid amount when grand total changes or payment method toggled
   useEffect(() => {
@@ -273,8 +343,8 @@ export const PosTerminal: React.FC = () => {
   }, [grandTotal, paymentMethod]);
 
   const numPaid = Number(paidAmount) || 0;
-  const changeToReturn = Math.max(0, numPaid - grandTotal);
-  const remainingDue = Math.max(0, grandTotal - numPaid);
+  const changeToReturn = Math.max(0, Math.round((numPaid - grandTotal) * 100) / 100);
+  const remainingDue = Math.max(0, Math.round((grandTotal - numPaid) * 100) / 100);
 
   // Quick New Customer Submit
   const handleCreateCustomer = async (e: React.FormEvent) => {
@@ -319,11 +389,14 @@ export const PosTerminal: React.FC = () => {
 
     setIsSubmitting(true);
     try {
+      const activeBranchId = user?.branch_id || currentBranch?.id || 1;
       const payload = {
+        branch_id: activeBranchId,
         customer_id: selectedCustomerId,
         items: cart.map((item) => ({
           product_id: item.product.id,
           quantity: item.quantity,
+          delivered_quantity: item.delivered_quantity !== undefined ? item.delivered_quantity : item.quantity,
           unit_price: item.unitPrice,
           discount: item.discount,
         })),
@@ -353,6 +426,7 @@ export const PosTerminal: React.FC = () => {
 
         // Refresh product stock list & customer balance
         fetchData();
+        fetchShiftData();
       }
     } catch (err: any) {
       setErrorMsg(err.message || 'Failed to complete transaction.');
@@ -402,8 +476,65 @@ export const PosTerminal: React.FC = () => {
           </form>
         </div>
 
-        {/* Right: Quick Action Buttons & Recent Invoices */}
+        {/* Right: Quick Action Buttons, Branch/Cashier info, & Recent Invoices */}
         <div className="flex items-center space-x-2">
+          {/* Daily Cash Drawer & Shift Closing (Cash-in-Hand Register) */}
+          <button
+            type="button"
+            onClick={() => setShowCashDrawerModal(true)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold border flex items-center space-x-2 transition-all shadow-xs shrink-0 ${
+              activeShift
+                ? 'bg-emerald-950/80 hover:bg-emerald-900 border-emerald-600/50 text-emerald-300'
+                : 'bg-amber-950/80 hover:bg-amber-900 border-amber-500 text-amber-300 ring-2 ring-amber-500/30'
+            }`}
+            title="Manage Cash Drawer, Petty Cash & End-of-Shift Closing"
+          >
+            <Wallet className={`w-3.5 h-3.5 ${activeShift ? 'text-emerald-400' : 'text-amber-400 animate-pulse'}`} />
+            <div className="flex flex-col text-left">
+              <span className="text-[9px] uppercase font-bold text-stone-400 leading-tight">
+                {activeShift ? 'Cash Register' : 'Shift Closed'}
+              </span>
+              <span className="font-bold text-white text-xs">
+                {activeShift
+                  ? `Rs. ${(activeShift.runningMetrics?.expected_closing_cash ?? activeShift.expected_closing_cash ?? 0).toLocaleString()}`
+                  : 'Open Shift (F4)'}
+              </span>
+            </div>
+          </button>
+
+          {/* Active Branch & Cashier Shift Tag */}
+          <div className="flex items-center space-x-2 bg-stone-800/90 py-1 px-2.5 rounded-lg border border-stone-700 text-xs shrink-0">
+            <Building2 className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+            <div className="flex flex-col text-left">
+              <span className="text-[9px] uppercase font-bold text-stone-400 leading-tight">Terminal Branch</span>
+              <select
+                value={user?.branch_id || currentBranch?.id || 1}
+                onChange={async (e) => {
+                  const bId = Number(e.target.value);
+                  await switchBranch(bId);
+                  fetchData();
+                  fetchShiftData();
+                }}
+                className="bg-stone-800 text-amber-300 font-bold text-xs focus:outline-none cursor-pointer rounded border-none p-0 pr-1 max-w-[140px] truncate"
+              >
+                {branches && branches.length > 0 ? (
+                  branches.map((b) => (
+                    <option key={b.id} value={b.id} className="bg-stone-900 text-white">
+                      {b.name} ({b.code})
+                    </option>
+                  ))
+                ) : (
+                  <option value={1}>Branch 1 (BR-01)</option>
+                )}
+              </select>
+            </div>
+            <div className="w-px h-5 bg-stone-700 mx-0.5" />
+            <div className="flex flex-col text-left">
+              <span className="text-[9px] uppercase font-bold text-stone-400 leading-tight">Cashier Shift</span>
+              <span className="font-bold text-white text-xs truncate max-w-[100px]">{user?.name || 'Cashier'}</span>
+            </div>
+          </div>
+
           {recentInvoices.length > 0 && (
             <div className="hidden xl:flex items-center space-x-1.5 mr-2">
               <span className="text-[10px] uppercase font-bold text-stone-400">Recent Bills:</span>
@@ -439,6 +570,25 @@ export const PosTerminal: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {/* Alert Banner if Cash Register Shift is Closed */}
+      {!activeShift && !isLoadingShift && (
+        <div className="bg-amber-50 border-b border-amber-300 px-4 py-2 text-xs flex items-center justify-between text-amber-900 shrink-0">
+          <div className="flex items-center space-x-2">
+            <AlertCircle className="w-4 h-4 text-amber-700 shrink-0" />
+            <span>
+              <strong>Shift Closed:</strong> Cash drawer is currently closed for this branch. Open register shift to log opening cash float and petty expenses.
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowCashDrawerModal(true)}
+            className="px-3 py-1 bg-amber-700 hover:bg-amber-800 text-white rounded-lg text-xs font-bold shadow-2xs transition-colors"
+          >
+            Open Shift (F4)
+          </button>
+        </div>
+      )}
 
       {/* Main POS Interface Columns */}
       <div className="flex-1 flex flex-col md:flex-row min-h-0 overflow-hidden">
@@ -650,82 +800,186 @@ export const PosTerminal: React.FC = () => {
               </p>
             </div>
           ) : (
-            cart.map((item) => (
-              <div
-                key={item.product.id}
-                className="p-2.5 bg-white border border-stone-200 rounded-lg shadow-xs space-y-2"
-              >
-                <div className="flex items-start justify-between">
-                  <div className="flex-1 min-w-0 pr-2">
-                    <h5 className="text-xs font-bold text-stone-900 truncate">
-                      {item.product.name}
-                    </h5>
-                    <div className="text-[10px] text-stone-500">
-                      {item.product.brand} | {item.product.unit}
+            cart.map((item) => {
+              const delivered = item.delivered_quantity !== undefined ? item.delivered_quantity : item.quantity;
+              const remaining = Math.max(0, item.quantity - delivered);
+              const isFullyDelivered = remaining === 0;
+              const isPendingPickup = delivered === 0;
+
+              return (
+                <div
+                  key={item.product.id}
+                  className={`p-2.5 bg-white border rounded-lg shadow-xs space-y-2 transition-all ${
+                    remaining > 0 ? 'border-amber-300 bg-amber-50/15 ring-1 ring-amber-300/50' : 'border-stone-200'
+                  }`}
+                >
+                  {/* Item Header */}
+                  <div className="flex items-start justify-between">
+                    <div className="flex-1 min-w-0 pr-2">
+                      <h5 className="text-xs font-bold text-stone-900 truncate">
+                        {item.product.name}
+                      </h5>
+                      <div className="text-[10px] text-stone-500 flex items-center space-x-2">
+                        <span>{item.product.brand}</span>
+                        <span>•</span>
+                        <span className="font-semibold text-stone-600 uppercase">{item.product.unit}</span>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => removeFromCart(item.product.id)}
+                      className="text-stone-400 hover:text-rose-600 p-1 transition-colors"
+                      title="Remove item"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+
+                  {/* Dual Columns: Total Purchased vs Delivered / Picked Up */}
+                  <div className="bg-stone-50 p-2 rounded-md border border-stone-200/80 space-y-1.5">
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      {/* Column 1: Total Purchased (Paid) */}
+                      <div>
+                        <label className="block text-[10px] font-bold uppercase text-stone-600 tracking-wider mb-1">
+                          Total Purchased:
+                        </label>
+                        <div className="flex items-center space-x-1">
+                          <button
+                            type="button"
+                            onClick={() => updateQuantity(item.product.id, item.quantity - 1)}
+                            className="w-5 h-5 rounded bg-white hover:bg-stone-200 border border-stone-300 flex items-center justify-center font-bold text-stone-700 shadow-2xs"
+                          >
+                            <Minus className="w-2.5 h-2.5" />
+                          </button>
+                          <input
+                            type="number"
+                            min="1"
+                            value={item.quantity}
+                            onChange={(e) => updateQuantity(item.product.id, Math.max(1, Number(e.target.value)))}
+                            className="w-full text-center text-xs font-black bg-white border border-stone-300 rounded py-0.5 text-stone-900 focus:ring-1 focus:ring-amber-500"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => updateQuantity(item.product.id, item.quantity + 1)}
+                            className="w-5 h-5 rounded bg-white hover:bg-stone-200 border border-stone-300 flex items-center justify-center font-bold text-stone-700 shadow-2xs"
+                          >
+                            <Plus className="w-2.5 h-2.5" />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Column 2: Delivered / Picked Up */}
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <label className="text-[10px] font-bold uppercase text-stone-600 tracking-wider">
+                            Delivered / Picked:
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => updateDeliveredQuantity(item.product.id, item.quantity)}
+                            className="text-[9px] font-bold text-amber-700 hover:text-amber-900 underline"
+                            title="Set full pickup now"
+                          >
+                            All
+                          </button>
+                        </div>
+                        <div className="flex items-center space-x-1">
+                          <input
+                            type="number"
+                            min="0"
+                            max={item.quantity}
+                            value={delivered}
+                            onChange={(e) => {
+                              const val = e.target.value === '' ? 0 : Number(e.target.value);
+                              updateDeliveredQuantity(item.product.id, isNaN(val) ? 0 : val);
+                            }}
+                            className={`w-full text-center text-xs font-black bg-white border rounded py-0.5 focus:ring-1 focus:ring-amber-500 ${
+                              remaining > 0 ? 'border-amber-400 text-amber-950 bg-amber-50/50' : 'border-stone-300 text-stone-900'
+                            }`}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => updateDeliveredQuantity(item.product.id, 0)}
+                            className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-stone-200 hover:bg-stone-300 text-stone-700 shadow-2xs"
+                            title="Set to 0 (Customer will pick up later)"
+                          >
+                            0
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Auto-Calculated Remaining Balance Row */}
+                    <div className="pt-1.5 border-t border-stone-200/60 flex items-center justify-between text-[11px]">
+                      <span className="text-[10px] font-semibold text-stone-500">Remaining Balance:</span>
+                      {isFullyDelivered ? (
+                        <span className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800">
+                          <Check className="w-2.5 h-2.5" />
+                          <span>Fully Delivered (0 {item.product.unit})</span>
+                        </span>
+                      ) : isPendingPickup ? (
+                        <span className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded text-[10px] font-black bg-rose-100 text-rose-800">
+                          <span>Pending: {remaining} {item.product.unit} remaining</span>
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded text-[10px] font-black bg-amber-100 text-amber-900 border border-amber-300">
+                          <span>Delivered: {delivered} | Remaining: {remaining} {item.product.unit}</span>
+                        </span>
+                      )}
                     </div>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={() => removeFromCart(item.product.id)}
-                    className="text-stone-400 hover:text-rose-600 p-1 transition-colors"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                </div>
+                  {/* Pricing Row: Price Tier, Unit Price & Grand Charged Line Total */}
+                  <div className="flex items-center justify-between text-xs pt-1 border-t border-stone-100">
+                    <div className="flex items-center space-x-2">
+                      <button
+                        type="button"
+                        onClick={() => togglePriceTier(item.product.id)}
+                        className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase transition-colors ${
+                          item.priceTier === 'wholesale'
+                            ? 'bg-blue-100 text-blue-800'
+                            : 'bg-stone-100 text-stone-700 hover:bg-stone-200'
+                        }`}
+                        title="Toggle Retail / Wholesale Price"
+                      >
+                        {item.priceTier === 'wholesale' ? 'Wholesale' : 'Retail'}
+                      </button>
+                      <span className="text-[10px] text-stone-500">
+                        @ Rs. {item.unitPrice.toLocaleString()}
+                      </span>
+                    </div>
 
-                <div className="flex items-center justify-between text-xs pt-1 border-t border-stone-100">
-                  {/* Quantity Controls */}
-                  <div className="flex items-center space-x-1.5">
-                    <button
-                      type="button"
-                      onClick={() => updateQuantity(item.product.id, item.quantity - 1)}
-                      className="w-6 h-6 rounded bg-stone-100 hover:bg-stone-200 flex items-center justify-center font-bold text-stone-700"
-                    >
-                      <Minus className="w-3 h-3" />
-                    </button>
-                    <input
-                      type="number"
-                      min="1"
-                      value={item.quantity}
-                      onChange={(e) => updateQuantity(item.product.id, Math.max(1, Number(e.target.value)))}
-                      className="w-12 text-center text-xs font-bold bg-stone-50 border border-stone-200 rounded py-0.5"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => updateQuantity(item.product.id, item.quantity + 1)}
-                      className="w-6 h-6 rounded bg-stone-100 hover:bg-stone-200 flex items-center justify-center font-bold text-stone-700"
-                    >
-                      <Plus className="w-3 h-3" />
-                    </button>
-                  </div>
-
-                  {/* Price Tier Toggle */}
-                  <button
-                    type="button"
-                    onClick={() => togglePriceTier(item.product.id)}
-                    className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase transition-colors ${
-                      item.priceTier === 'wholesale'
-                        ? 'bg-blue-100 text-blue-800'
-                        : 'bg-stone-100 text-stone-700 hover:bg-stone-200'
-                    }`}
-                    title="Toggle Retail / Wholesale Price"
-                  >
-                    {item.priceTier === 'wholesale' ? 'Wholesale' : 'Retail'}
-                  </button>
-
-                  {/* Line Total */}
-                  <div className="font-black text-stone-900 text-right">
-                    Rs. {item.lineTotal.toLocaleString()}
+                    <div className="text-right">
+                      <div className="font-black text-stone-900">
+                        Rs. {item.lineTotal.toLocaleString()}
+                      </div>
+                      <div className="text-[9px] text-stone-400">
+                        Billed on {item.quantity} {item.product.unit}
+                      </div>
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))
+              );
+            })
           )}
         </div>
 
         {/* Bottom Checkout & Payment Panel */}
         <div className="p-4 bg-white border-t border-stone-200 space-y-3 shadow-lg shrink-0">
+          {/* Partial Delivery Notice Banner */}
+          {cartDeliveryTotals.remaining > 0 && (
+            <div className="p-2 bg-amber-50 border border-amber-300 rounded-lg text-amber-950 text-xs flex items-center justify-between shadow-2xs">
+              <div className="flex items-center space-x-1.5">
+                <Clock className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                <span className="font-bold text-[11px]">Partial Delivery Scheduled:</span>
+              </div>
+              <div className="text-[11px] font-black">
+                {cartDeliveryTotals.delivered} Picked | <span className="text-amber-700">{cartDeliveryTotals.remaining} Remaining</span>
+              </div>
+            </div>
+          )}
+
           {/* Subtotal & Order Discount */}
           <div className="space-y-1.5 text-xs text-stone-600">
             <div className="flex justify-between">
@@ -929,6 +1183,17 @@ export const PosTerminal: React.FC = () => {
           }}
           onInvoiceUpdated={(updatedSale) => {
             fetchData();
+          }}
+        />
+      )}
+
+      {/* ================= MODAL: DAILY CASH REGISTER & SHIFT CLOSING ================= */}
+      {showCashDrawerModal && (
+        <CashDrawerModal
+          branchId={user?.branch_id || currentBranch?.id || 1}
+          onClose={() => setShowCashDrawerModal(false)}
+          onShiftStatusChange={() => {
+            fetchShiftData();
           }}
         />
       )}

@@ -25,6 +25,7 @@ import {
   X,
   Pin,
   PanelLeftClose,
+  Building2,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -65,6 +66,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'products', label: 'Products', icon: Package, role: 'ALL' },
     { id: 'categories', label: 'Categories', icon: Layers, role: 'ADMIN' },
     { id: 'inventory', label: 'Inventory & Stock', icon: Boxes, role: 'ADMIN' },
+    { id: 'branches', label: 'Multi-Branch & Transfers', icon: Building2, role: 'ADMIN', badge: 'Multi' },
     { id: 'barcodes', label: 'Barcode & Shelf Tags', icon: Barcode, role: 'ADMIN' },
     { id: 'purchases', label: 'Purchases (Stock In)', icon: ShoppingBag, role: 'ADMIN' },
     { id: 'suppliers', label: 'Suppliers', icon: Truck, role: 'ADMIN' },

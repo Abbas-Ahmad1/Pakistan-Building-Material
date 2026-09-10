@@ -18,7 +18,7 @@ suppliersRouter.get('/', (req: Request, res: Response): any => {
         email, 
         address, 
         payable_balance, 
-        status,
+        COALESCE(status, 'ACTIVE') as status,
         created_at,
         (SELECT COUNT(*) FROM purchases p WHERE p.supplier_id = suppliers.id) as purchases_count
       FROM suppliers
@@ -73,7 +73,7 @@ suppliersRouter.post('/', (req: Request, res: Response): any => {
       .run(
         name.trim(),
         company?.trim() || name.trim(),
-        phone?.trim() || null,
+        phone?.trim() || '',
         email?.trim() || null,
         address?.trim() || null,
         initialPayable
@@ -92,6 +92,58 @@ suppliersRouter.post('/', (req: Request, res: Response): any => {
   } catch (error: any) {
     console.error('Error creating supplier:', error);
     return res.status(500).json({ success: false, message: 'Failed to create supplier.' });
+  }
+});
+
+// PUT /api/suppliers/:id - update supplier details
+suppliersRouter.put('/:id', (req: Request, res: Response): any => {
+  try {
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : undefined;
+    const session = verifySession(token);
+
+    if (session?.role !== 'ADMIN') {
+      return res.status(403).json({ success: false, message: 'Only store admins can update suppliers.' });
+    }
+
+    const supplierId = Number(req.params.id);
+    const { name, company, phone, email, address, status = 'ACTIVE' } = req.body;
+
+    if (!name || !name.trim()) {
+      return res.status(400).json({ success: false, message: 'Supplier contact person or company name is required.' });
+    }
+
+    const existing = db.prepare('SELECT * FROM suppliers WHERE id = ?').get(supplierId);
+    if (!existing) {
+      return res.status(404).json({ success: false, message: 'Supplier not found.' });
+    }
+
+    db.prepare(`
+      UPDATE suppliers
+      SET 
+        name = ?,
+        company = ?,
+        phone = ?,
+        email = ?,
+        address = ?,
+        status = ?,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(
+      name.trim(),
+      company?.trim() || name.trim(),
+      phone?.trim() || '',
+      email?.trim() || null,
+      address?.trim() || null,
+      status || 'ACTIVE',
+      supplierId
+    );
+
+    const updated = db.prepare('SELECT * FROM suppliers WHERE id = ?').get(supplierId);
+    return res.json({ success: true, data: updated, message: 'Supplier updated successfully.' });
+  } catch (error: any) {
+    console.error('Error updating supplier:', error);
+    return res.status(500).json({ success: false, message: 'Failed to update supplier.' });
   }
 });
 

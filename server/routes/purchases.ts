@@ -230,6 +230,8 @@ purchasesRouter.post('/', (req: Request, res: Response): any => {
       paymentStatus = 'DUE';
     }
 
+    const branchId = Number(req.body.branch_id) || 1;
+
     // Execute Database Transaction
     db.exec('BEGIN');
     let purchaseId: number;
@@ -286,11 +288,19 @@ purchasesRouter.post('/', (req: Request, res: Response): any => {
         WHERE id = ?
       `);
 
+      const updateBranchStockStmt = db.prepare(`
+        INSERT INTO branch_stocks (branch_id, product_id, current_stock, minimum_stock, updated_at)
+        VALUES (?, ?, ?, 5, CURRENT_TIMESTAMP)
+        ON CONFLICT(branch_id, product_id) DO UPDATE SET 
+          current_stock = current_stock + excluded.current_stock,
+          updated_at = CURRENT_TIMESTAMP
+      `);
+
       const insertTxStmt = db.prepare(`
         INSERT INTO inventory_transactions (
           product_id, transaction_type, reference_type, reference_id,
-          quantity, unit_cost, stock_before, stock_after, notes, created_by
-        ) VALUES (?, 'PURCHASE', 'PURCHASE', ?, ?, ?, ?, ?, ?, ?)
+          quantity, unit_cost, stock_before, stock_after, notes, created_by, branch_id
+        ) VALUES (?, 'PURCHASE', 'PURCHASE', ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       for (const item of validatedItems) {
@@ -302,6 +312,8 @@ purchasesRouter.post('/', (req: Request, res: Response): any => {
           updateStockStmt.run(item.stockAfter, item.unitCost, item.productId);
         }
 
+        updateBranchStockStmt.run(branchId, item.productId, item.quantity);
+
         insertTxStmt.run(
           item.productId,
           purchaseId,
@@ -310,7 +322,8 @@ purchasesRouter.post('/', (req: Request, res: Response): any => {
           item.stockBefore,
           item.stockAfter,
           `Stock Inward from ${supplier.name} (${poNumber})`,
-          session.userId
+          session.userId,
+          branchId
         );
       }
 

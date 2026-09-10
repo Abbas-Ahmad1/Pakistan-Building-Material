@@ -154,17 +154,27 @@ inventoryRouter.post('/adjust', (req: Request, res: Response): any => {
       stockAfter = stockBefore - qty;
     }
 
+    const branchId = Number(req.body.branch_id) || 1;
+
     // Execute database transaction
     db.exec('BEGIN');
     let transId: number | bigint;
     try {
       db.prepare(`UPDATE products SET current_stock = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(stockAfter, product.id);
 
+      db.prepare(`
+        INSERT INTO branch_stocks (branch_id, product_id, current_stock, minimum_stock, updated_at)
+        VALUES (?, ?, ?, 5, CURRENT_TIMESTAMP)
+        ON CONFLICT(branch_id, product_id) DO UPDATE SET 
+          current_stock = current_stock + excluded.current_stock,
+          updated_at = CURRENT_TIMESTAMP
+      `).run(branchId, product.id, adjustment_type === 'ADJUSTMENT_IN' ? qty : -qty);
+
       const transInfo = db.prepare(`
         INSERT INTO inventory_transactions (
           product_id, transaction_type, reference_type, reference_id,
-          quantity, unit_cost, stock_before, stock_after, notes, created_by
-        ) VALUES (?, ?, 'MANUAL_ADJUSTMENT', NULL, ?, ?, ?, ?, ?, ?)
+          quantity, unit_cost, stock_before, stock_after, notes, created_by, branch_id
+        ) VALUES (?, ?, 'MANUAL_ADJUSTMENT', NULL, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         product.id,
         adjustment_type,
@@ -173,7 +183,8 @@ inventoryRouter.post('/adjust', (req: Request, res: Response): any => {
         stockBefore,
         stockAfter,
         notes || 'Physical audit count adjustment',
-        session.userId
+        session.userId,
+        branchId
       );
 
       transId = transInfo.lastInsertRowid;

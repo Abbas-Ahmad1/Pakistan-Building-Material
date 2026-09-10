@@ -18,6 +18,7 @@ import {
   RefreshCw,
   RotateCcw,
   ScanLine,
+  Truck,
 } from 'lucide-react';
 import { apiRequest } from '../services/api';
 import { Sale } from '../types';
@@ -54,6 +55,7 @@ export const SalesRegister: React.FC = () => {
   // Invoice Lookup & Return Modal
   const [selectedSaleForLookup, setSelectedSaleForLookup] = useState<Sale | null>(null);
   const [showLookupModal, setShowLookupModal] = useState(false);
+  const [lookupInitialTab, setLookupInitialTab] = useState<'details' | 'payment' | 'delivery' | 'returns' | 'history'>('details');
 
   const fetchSales = async () => {
     setIsLoading(true);
@@ -238,20 +240,21 @@ export const SalesRegister: React.FC = () => {
                 <th className="py-3 px-4 text-right">Balance Due</th>
                 {isAdmin && <th className="py-3 px-4 text-right">Profit</th>}
                 <th className="py-3 px-4 text-center">Payment Status</th>
+                <th className="py-3 px-4 text-center">Delivery Status</th>
                 <th className="py-3 px-4 text-center">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-stone-200">
               {isLoading ? (
                 <tr>
-                  <td colSpan={isAdmin ? 10 : 9} className="py-12 text-center text-stone-400">
+                  <td colSpan={isAdmin ? 11 : 10} className="py-12 text-center text-stone-400">
                     <RefreshCw className="w-6 h-6 animate-spin mx-auto mb-2 text-amber-600" />
                     Loading invoices...
                   </td>
                 </tr>
               ) : sales.length === 0 ? (
                 <tr>
-                  <td colSpan={isAdmin ? 10 : 9} className="py-12 text-center text-stone-400">
+                  <td colSpan={isAdmin ? 11 : 10} className="py-12 text-center text-stone-400">
                     <Receipt className="w-8 h-8 mx-auto mb-2 text-stone-300" />
                     No sales invoices found matching your criteria.
                   </td>
@@ -285,7 +288,12 @@ export const SalesRegister: React.FC = () => {
                     </td>
 
                     <td className="py-3 px-4 text-right font-black text-stone-900">
-                      Rs. {sale.grand_total.toLocaleString()}
+                      <div>Rs. {(sale.net_total || sale.grand_total).toLocaleString()}</div>
+                      {(sale.returned_amount || 0) > 0 && (
+                        <div className="text-[10px] text-rose-600 font-medium">
+                          (Ret: -Rs. {sale.returned_amount?.toLocaleString()})
+                        </div>
+                      )}
                     </td>
 
                     <td className="py-3 px-4 text-right font-semibold text-emerald-700">
@@ -324,18 +332,52 @@ export const SalesRegister: React.FC = () => {
                     </td>
 
                     <td className="py-3 px-4 text-center">
+                      <span
+                        className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                          sale.delivery_status === 'DELIVERED' || !sale.delivery_status
+                            ? 'bg-emerald-100 text-emerald-800'
+                            : sale.delivery_status === 'PARTIAL'
+                            ? 'bg-amber-100 text-amber-900 border border-amber-300'
+                            : 'bg-rose-100 text-rose-800'
+                        }`}
+                      >
+                        <Truck className="w-2.5 h-2.5 mr-1" />
+                        {sale.delivery_status === 'PARTIAL'
+                          ? `Partial (${sale.total_delivered_qty ?? 0}/${sale.total_purchased_qty ?? 0})`
+                          : sale.delivery_status === 'PENDING'
+                          ? 'Pending'
+                          : 'Delivered'}
+                      </span>
+                    </td>
+
+                    <td className="py-3 px-4 text-center">
                       <div className="flex items-center justify-center space-x-1.5">
                         <button
                           type="button"
                           onClick={() => {
                             setSelectedSaleForLookup(sale);
+                            setLookupInitialTab('delivery');
                             setShowLookupModal(true);
                           }}
-                          className="p-1.5 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-lg transition-colors inline-flex items-center space-x-1"
+                          className="p-1.5 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 rounded-lg transition-colors inline-flex items-center space-x-1"
+                          title="Record partial pickup / delivery"
+                        >
+                          <Truck className="w-3.5 h-3.5 text-amber-700" />
+                          <span className="text-[10px] font-bold">Delivery</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedSaleForLookup(sale);
+                            setLookupInitialTab('details');
+                            setShowLookupModal(true);
+                          }}
+                          className="p-1.5 bg-stone-100 hover:bg-stone-200 text-stone-700 rounded-lg transition-colors inline-flex items-center space-x-1"
                           title="Scan Barcode / Settle Payment / Return Items"
                         >
                           <RotateCcw className="w-3.5 h-3.5" />
-                          <span className="text-[10px] font-bold">Manage / Return</span>
+                          <span className="text-[10px] font-bold">Manage</span>
                         </button>
 
                         <button
@@ -369,6 +411,7 @@ export const SalesRegister: React.FC = () => {
       {showLookupModal && (
         <InvoiceLookupModal
           initialSale={selectedSaleForLookup}
+          initialTab={lookupInitialTab}
           onClose={() => {
             setShowLookupModal(false);
             setSelectedSaleForLookup(null);

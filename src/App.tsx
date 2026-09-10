@@ -21,6 +21,7 @@ import { ZakatCalculatorView } from './pages/ZakatCalculatorView';
 import { AuditLogsView } from './pages/AuditLogsView';
 import { QuotationsView } from './pages/QuotationsView';
 import { BarcodeGeneratorView } from './pages/BarcodeGeneratorView';
+import { MultiBranchView } from './pages/MultiBranchView';
 import { PublicStorefront } from './pages/PublicStorefront';
 import { PhasePlaceholder } from './pages/PhasePlaceholder';
 import { Sidebar } from './components/layout/Sidebar';
@@ -108,7 +109,9 @@ const MainLayout: React.FC = () => {
       case 'categories':
         return <Categories onBack={() => setCurrentView('products')} />;
       case 'inventory':
-        return <Inventory />;
+        return <Inventory onNavigate={setCurrentView} />;
+      case 'branches':
+        return <MultiBranchView />;
       case 'barcodes':
         return <BarcodeGeneratorView />;
       case 'purchases':

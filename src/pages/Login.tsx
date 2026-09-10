@@ -8,13 +8,14 @@ interface LoginProps {
 }
 
 export const Login: React.FC<LoginProps> = ({ onBackToWebsite }) => {
-  const { login } = useAuth();
+  const { login, branches } = useAuth();
   const { settings } = useSettings();
 
   // Selected active slot: 'admin' or 'cashier'
   const [selectedRole, setSelectedRole] = useState<'admin' | 'cashier'>('admin');
   const [username, setUsername] = useState('admin');
   const [password, setPassword] = useState('');
+  const [selectedBranchId, setSelectedBranchId] = useState<number>(1);
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<{ title: string; detail: string } | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -49,7 +50,7 @@ export const Login: React.FC<LoginProps> = ({ onBackToWebsite }) => {
     setError(null);
     setIsSubmitting(true);
 
-    const res = await login(username, password);
+    const res = await login(username, password, selectedBranchId);
     if (!res.success) {
       setError({
         title: 'Incorrect Username or Password',
@@ -285,6 +286,40 @@ export const Login: React.FC<LoginProps> = ({ onBackToWebsite }) => {
                   {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
               </div>
+            </div>
+
+            {/* Branch Selection Field */}
+            <div>
+              <label className="block text-xs font-semibold text-stone-700 uppercase tracking-wider mb-1">
+                Branch Location (برانچ منتخب کریں)
+              </label>
+              <div className="relative">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-stone-400">
+                  <Store className="w-4 h-4 text-stone-500" />
+                </div>
+                <select
+                  value={selectedBranchId}
+                  onChange={(e) => setSelectedBranchId(Number(e.target.value))}
+                  className="block w-full pl-10 pr-3 py-2.5 border border-stone-300 rounded-lg text-sm bg-stone-50 font-medium text-stone-800 focus:outline-none focus:ring-2 focus:ring-amber-600 focus:bg-white transition-all"
+                >
+                  {branches && branches.length > 0 ? (
+                    branches.map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {b.name} ({b.code}){b.is_main ? ' — Central/Main Store' : ''}
+                      </option>
+                    ))
+                  ) : (
+                    <>
+                      <option value={1}>Branch 1 - Main Store & Central Warehouse (BR-01)</option>
+                      <option value={2}>Branch 2 - Gulberg Commercial Branch (BR-02)</option>
+                      <option value={3}>Branch 3 - Industrial Area Depot (BR-03)</option>
+                    </>
+                  )}
+                </select>
+              </div>
+              <p className="mt-1 text-[10px] text-stone-500">
+                Inventory and cash receipts will be registered under this branch.
+              </p>
             </div>
 
             <button

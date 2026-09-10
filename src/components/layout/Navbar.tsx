@@ -121,8 +121,8 @@ export const Navbar: React.FC<NavbarProps> = ({
           </button>
         </div>
 
-        {/* View Public Customer Website Button */}
-        {onViewWebsite && (
+        {/* View Public Customer Website Button (Admin only, hidden on POS billing screen) */}
+        {onViewWebsite && activeView !== 'pos' && user?.role === 'ADMIN' && (
           <button
             type="button"
             onClick={onViewWebsite}

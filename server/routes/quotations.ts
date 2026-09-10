@@ -238,14 +238,14 @@ quotationsRouter.post('/:id/convert-to-sale', (req: Request, res: Response): any
 
     let totalCogs = 0;
     for (const it of items) {
-      totalCogs += Number(it.quantity) * Number(it.purchase_price || 0);
+      totalCogs += Math.round(Number(it.quantity) * Number(it.purchase_price || 0) * 100) / 100;
     }
 
-    const grandTotal = quotation.grand_total;
-    const actualPaid = paid_amount !== undefined ? Number(paid_amount) : grandTotal;
-    const dueAmount = Math.max(0, grandTotal - actualPaid);
-    const paymentStatus = dueAmount === 0 ? 'PAID' : actualPaid > 0 ? 'PARTIAL' : 'DUE';
-    const grossProfit = grandTotal - totalCogs;
+    const grandTotal = Math.round(Number(quotation.grand_total) * 100) / 100;
+    const actualPaid = paid_amount !== undefined ? Math.round(Number(paid_amount) * 100) / 100 : grandTotal;
+    const dueAmount = Math.max(0, Math.round((grandTotal - actualPaid) * 100) / 100);
+    const paymentStatus = dueAmount <= 0.01 ? 'PAID' : actualPaid > 0 ? 'PARTIAL' : 'DUE';
+    const grossProfit = Math.round((grandTotal - totalCogs) * 100) / 100;
 
     // Use existing or default customer
     let custId = quotation.customer_id;
@@ -263,76 +263,115 @@ quotationsRouter.post('/:id/convert-to-sale', (req: Request, res: Response): any
       }
     }
 
-    // Insert Sale
-    const insSale = db.prepare(`
-      INSERT INTO sales (
-        invoice_number, customer_id, sale_date, subtotal, tax_amount, discount_amount,
-        grand_total, cogs_total, gross_profit, paid_amount, due_amount,
-        payment_method, payment_status, cashier_id
-      ) VALUES (?, ?, datetime('now'), ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
+    const branchId = 1;
 
-    const saleRes = insSale.run(
-      invoiceNumber,
-      custId,
-      quotation.subtotal,
-      quotation.discount_amount,
-      grandTotal,
-      totalCogs,
-      grossProfit,
-      actualPaid,
-      dueAmount,
-      payment_method,
-      paymentStatus,
-      userId
-    );
+    db.exec('BEGIN');
+    let saleId: number;
 
-    const saleId = Number(saleRes.lastInsertRowid);
-
-    // Insert Sale Items & Deduct Stock
-    const insSaleItem = db.prepare(`
-      INSERT INTO sale_items (
-        sale_id, product_id, quantity, unit_cost, unit_price, discount, line_total, line_profit
-      ) VALUES (?, ?, ?, ?, ?, 0, ?, ?)
-    `);
-
-    const updateStock = db.prepare(`
-      UPDATE products SET current_stock = current_stock - ?, updated_at = datetime('now') WHERE id = ?
-    `);
-
-    for (const it of items) {
-      const lineCost = Number(it.quantity) * Number(it.purchase_price || 0);
-      const lineProfit = it.line_total - lineCost;
-
-      insSaleItem.run(saleId, it.product_id, it.quantity, it.purchase_price, it.unit_price, it.line_total, lineProfit);
-      updateStock.run(it.quantity, it.product_id);
-    }
-
-    // Update Customer Khata if due
-    if (dueAmount > 0) {
-      db.prepare(`
-        UPDATE customers 
-        SET total_purchases = total_purchases + ?,
-            total_paid = total_paid + ?,
-            outstanding_balance = outstanding_balance + ?,
-            updated_at = datetime('now')
-        WHERE id = ?
-      `).run(grandTotal, actualPaid, dueAmount, custId);
-    } else {
-      db.prepare(`
-        UPDATE customers 
-        SET total_purchases = total_purchases + ?,
-            total_paid = total_paid + ?,
-            updated_at = datetime('now')
-        WHERE id = ?
-      `).run(grandTotal, actualPaid, custId);
-    }
-
-    // Mark quotation as CONVERTED
-    db.prepare(`UPDATE quotations SET status = 'CONVERTED' WHERE id = ?`).run(id);
-
-    // Audit log
     try {
+      // Insert Sale
+      const insSale = db.prepare(`
+        INSERT INTO sales (
+          invoice_number, customer_id, branch_id, sale_date, subtotal, tax_amount, discount_amount,
+          grand_total, original_grand_total, net_total, returned_amount, cogs_total, gross_profit,
+          paid_amount, due_amount, payment_method, payment_status, cashier_id
+        ) VALUES (?, ?, ?, datetime('now'), ?, 0, ?, ?, ?, ?, 0.00, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      const saleRes = insSale.run(
+        invoiceNumber,
+        custId,
+        branchId,
+        quotation.subtotal,
+        quotation.discount_amount,
+        grandTotal,
+        grandTotal,
+        grandTotal,
+        totalCogs,
+        grossProfit,
+        actualPaid,
+        dueAmount,
+        payment_method,
+        paymentStatus,
+        userId
+      );
+
+      saleId = Number(saleRes.lastInsertRowid);
+
+      // Insert Sale Items & Deduct Stock from both branch_stocks and products
+      const insSaleItem = db.prepare(`
+        INSERT INTO sale_items (
+          sale_id, product_id, quantity, unit_cost, unit_price, discount, line_total, line_profit,
+          returned_quantity, remaining_quantity
+        ) VALUES (?, ?, ?, ?, ?, 0, ?, ?, 0.00, ?)
+      `);
+
+      const updateGlobalStock = db.prepare(`
+        UPDATE products SET current_stock = current_stock - ?, updated_at = datetime('now') WHERE id = ?
+      `);
+
+      const updateBranchStock = db.prepare(`
+        INSERT INTO branch_stocks (branch_id, product_id, current_stock, minimum_stock, updated_at)
+        VALUES (?, ?, -?, 5, CURRENT_TIMESTAMP)
+        ON CONFLICT(branch_id, product_id) DO UPDATE SET 
+          current_stock = current_stock - excluded.current_stock,
+          updated_at = CURRENT_TIMESTAMP
+      `);
+
+      const insertTxStmt = db.prepare(`
+        INSERT INTO inventory_transactions (
+          product_id, transaction_type, reference_type, reference_id,
+          quantity, unit_cost, stock_before, stock_after, notes, created_by, branch_id
+        ) VALUES (?, 'SALE', 'INVOICE', ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      for (const it of items) {
+        const qty = Number(it.quantity);
+        const lineCost = Math.round(qty * Number(it.purchase_price || 0) * 100) / 100;
+        const lineTotal = Math.round(Number(it.line_total) * 100) / 100;
+        const lineProfit = Math.round((lineTotal - lineCost) * 100) / 100;
+
+        insSaleItem.run(saleId, it.product_id, qty, it.purchase_price, it.unit_price, lineTotal, lineProfit, qty);
+        updateGlobalStock.run(qty, it.product_id);
+        updateBranchStock.run(branchId, it.product_id, qty);
+
+        insertTxStmt.run(
+          it.product_id,
+          saleId,
+          -qty,
+          it.purchase_price || 0,
+          it.current_stock || 0,
+          (it.current_stock || 0) - qty,
+          `Sale from Quotation conversion ${quotation.quotation_number} (${invoiceNumber})`,
+          userId,
+          branchId
+        );
+      }
+
+      // Update Customer Khata if due
+      if (dueAmount > 0) {
+        db.prepare(`
+          UPDATE customers 
+          SET total_purchases = total_purchases + ?,
+              total_paid = total_paid + ?,
+              outstanding_balance = outstanding_balance + ?,
+              updated_at = datetime('now')
+          WHERE id = ?
+        `).run(grandTotal, actualPaid, dueAmount, custId);
+      } else {
+        db.prepare(`
+          UPDATE customers 
+          SET total_purchases = total_purchases + ?,
+              total_paid = total_paid + ?,
+              updated_at = datetime('now')
+          WHERE id = ?
+        `).run(grandTotal, actualPaid, custId);
+      }
+
+      // Mark quotation as CONVERTED
+      db.prepare(`UPDATE quotations SET status = 'CONVERTED' WHERE id = ?`).run(id);
+
+      // Audit log
       db.prepare(`
         INSERT INTO audit_logs (user_id, action, module, record_id, details)
         VALUES (?, 'CONVERT_QUOTATION_TO_SALE', 'Quotations', ?, ?)
@@ -341,7 +380,12 @@ quotationsRouter.post('/:id/convert-to-sale', (req: Request, res: Response): any
         saleId,
         `Converted quotation ${quotation.quotation_number} to invoice ${invoiceNumber} for Rs. ${grandTotal.toLocaleString()}`
       );
-    } catch (_) {}
+
+      db.exec('COMMIT');
+    } catch (txErr) {
+      db.exec('ROLLBACK');
+      throw txErr;
+    }
 
     return res.json({
       success: true,

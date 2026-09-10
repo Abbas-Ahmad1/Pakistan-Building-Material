@@ -21,9 +21,14 @@ import {
   CheckCircle2,
   DollarSign,
   Package,
+  Building2,
 } from 'lucide-react';
 
-export const Inventory: React.FC = () => {
+interface InventoryProps {
+  onNavigate?: (view: string) => void;
+}
+
+export const Inventory: React.FC<InventoryProps> = ({ onNavigate }) => {
   const { user } = useAuth();
   const { formatCurrency } = useSettings();
   const isAdmin = user?.role === 'ADMIN';
@@ -128,6 +133,17 @@ export const Inventory: React.FC = () => {
           >
             <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin text-amber-700' : ''}`} />
           </button>
+
+          {isAdmin && onNavigate && (
+            <button
+              type="button"
+              onClick={() => onNavigate('branches')}
+              className="flex items-center space-x-1.5 px-3 py-2 bg-stone-900 hover:bg-stone-800 text-white rounded-lg text-xs font-semibold shadow-xs transition-colors"
+            >
+              <Building2 className="w-4 h-4 text-amber-400" />
+              <span>Multi-Branch Matrix</span>
+            </button>
+          )}
 
           {isAdmin && (
             <button

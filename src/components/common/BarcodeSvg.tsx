@@ -19,7 +19,8 @@ export const BarcodeSvg: React.FC<BarcodeSvgProps> = ({
   showText = true,
   className = '',
 }) => {
-  if (!value) return null;
+  const safeValue = String(value || '').trim();
+  if (!safeValue) return null;
 
   // Code 128B pattern dictionary (107 standard patterns, 11 units each, 3 bars + 3 spaces)
   const CODE128_PATTERNS: Record<number, string> = {
@@ -52,8 +53,8 @@ export const BarcodeSvg: React.FC<BarcodeSvgProps> = ({
   const codeIndices: number[] = [104];
   let checksum = 104;
 
-  for (let i = 0; i < value.length; i++) {
-    const ascii = value.charCodeAt(i);
+  for (let i = 0; i < safeValue.length; i++) {
+    const ascii = safeValue.charCodeAt(i);
     // ASCII 32 (' ') to 126 ('~') maps to code index ascii - 32
     const codeIdx = Math.max(0, Math.min(95, ascii - 32));
     codeIndices.push(codeIdx);
@@ -106,7 +107,6 @@ export const BarcodeSvg: React.FC<BarcodeSvgProps> = ({
       }
     }
   }
-
   if (currentRunStart !== null) {
     rects.push({
       x: currentRunStart * unitWidth,
@@ -139,7 +139,7 @@ export const BarcodeSvg: React.FC<BarcodeSvgProps> = ({
       </svg>
       {showText && (
         <span className="font-mono text-[9px] tracking-widest text-stone-800 font-bold uppercase mt-0.5">
-          {value}
+          {safeValue}
         </span>
       )}
     </div>

@@ -26,6 +26,19 @@ const UNITS: ProductUnit[] = [
   'Roll',
 ];
 
+export const CEMENT_BRANDS = [
+  'Cherat Cement',
+  'Fauji Cement (FCCL)',
+  'Lucky Cement',
+  'Bestway Cement',
+  'D.G. Khan Cement (DGKC)',
+  'Maple Leaf Cement',
+  'Falcon Cement',
+  'Kohat Cement',
+  'Pioneer Cement',
+  'Power Cement',
+];
+
 export const ProductFormModal: React.FC<ProductFormModalProps> = ({
   isOpen,
   onClose,
@@ -307,11 +320,24 @@ export const ProductFormModal: React.FC<ProductFormModalProps> = ({
                 </label>
                 <input
                   type="text"
+                  list="cement-brands-list"
                   value={formData.brand}
                   onChange={(e) => setFormData({ ...formData, brand: e.target.value })}
-                  placeholder="e.g. IIL, Master, Sonex, Lucky"
+                  placeholder="e.g. Cherat, Fauji, Lucky, Bestway, Master"
                   className="w-full px-3 py-2 border border-stone-300 rounded-lg text-xs focus:ring-2 focus:ring-amber-600 focus:outline-none"
                 />
+                <datalist id="cement-brands-list">
+                  {CEMENT_BRANDS.map((b) => (
+                    <option key={b} value={b} />
+                  ))}
+                  <option value="Popular Pipes" />
+                  <option value="Master Sanitary" />
+                  <option value="Master Ceramics" />
+                  <option value="Crown Valves" />
+                  <option value="Berger Paints" />
+                  <option value="Brighto Paints" />
+                  <option value="Diamond Paints" />
+                </datalist>
               </div>
 
               <div>
@@ -331,6 +357,44 @@ export const ProductFormModal: React.FC<ProductFormModalProps> = ({
                   ))}
                 </select>
               </div>
+
+              {/* Quick Select Cement Brands if category is Cement */}
+              {selectedCategory?.name?.toLowerCase().includes('cement') && (
+                <div className="col-span-full bg-amber-50/50 p-2.5 rounded-lg border border-amber-200">
+                  <span className="text-[11px] font-bold text-amber-900 block mb-1.5">
+                    Select Brand for Cement & Aggregates:
+                  </span>
+                  <div className="flex flex-wrap gap-1.5">
+                    {CEMENT_BRANDS.map((b) => {
+                      const isSelected = formData.brand === b;
+                      return (
+                        <button
+                          key={b}
+                          type="button"
+                          onClick={() => {
+                            const matchedSub = availableSubcategories.find(
+                              (s) => s.name.toLowerCase() === b.toLowerCase()
+                            );
+                            setFormData((prev) => ({
+                              ...prev,
+                              brand: b,
+                              subcategory_id: matchedSub ? String(matchedSub.id) : prev.subcategory_id,
+                              unit: 'Bag',
+                            }));
+                          }}
+                          className={`px-2 py-0.5 rounded text-[11px] font-medium border transition-colors ${
+                            isSelected
+                              ? 'bg-amber-600 text-white border-amber-600'
+                              : 'bg-white text-stone-700 border-stone-300 hover:bg-stone-50 hover:border-amber-400'
+                          }`}
+                        >
+                          {b}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 

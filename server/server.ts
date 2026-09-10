@@ -17,6 +17,8 @@ import { reportsRouter } from './routes/reports.js';
 import { zakatRouter } from './routes/zakat.js';
 import { auditLogsRouter } from './routes/auditLogs.js';
 import { quotationsRouter } from './routes/quotations.js';
+import { branchesRouter } from './routes/branches.js';
+import { cashDrawerRouter } from './routes/cashDrawer.js';
 
 async function startServer() {
   // Initialize SQLite database and seed demo records
@@ -48,6 +50,8 @@ async function startServer() {
   app.use('/api/zakat', zakatRouter);
   app.use('/api/audit-logs', auditLogsRouter);
   app.use('/api/quotations', quotationsRouter);
+  app.use('/api/branches', branchesRouter);
+  app.use('/api/cash-drawer', cashDrawerRouter);
 
   // Vite middleware for development vs. static dist serving for production
   if (process.env.NODE_ENV !== 'production') {
