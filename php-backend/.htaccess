@@ -1,0 +1,41 @@
+# Apache Configuration for PHP REST API (Shared Hosting / cPanel compatible)
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteBase /
+
+    # Enable HTTP Authorization header in PHP CGI/FastCGI environments (cPanel/Hostinger/GoDaddy)
+    SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1
+    <IfModule mod_authz_core.c>
+        CGIPassAuth On
+    </IfModule>
+
+    # Block direct access to sensitive configuration files and directories
+    RewriteRule ^config/.*$ - [F,L]
+    RewriteRule ^\.env.*$ - [F,L]
+    RewriteRule ^database\.sql$ - [F,L]
+    RewriteRule ^seed\.sql$ - [F,L]
+    RewriteRule ^migrate\.php$ - [F,L]
+
+    # Serve existing static files in uploads directly
+    RewriteCond %{REQUEST_FILENAME} -f
+    RewriteRule ^uploads/(.*)$ uploads/$1 [L]
+
+    # Route all API and other requests to index.php
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^(.*)$ index.php [QSA,L]
+</IfModule>
+
+# Security Headers
+<IfModule mod_headers.c>
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set X-Frame-Options "SAMEORIGIN"
+    Header always set X-XSS-Protection "1; mode=block"
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+</IfModule>
+
+# Disable Directory Browsing
+Options -Indexes
+
+# Set default UTF-8 charset
+AddDefaultCharset UTF-8

@@ -1,0 +1,105 @@
+@import "tailwindcss";
+
+@layer utilities {
+  /* Mobile touch & smooth scrolling helpers */
+  .touch-scroll {
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-y: contain;
+  }
+
+  /* Responsive custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background-color: rgba(168, 162, 158, 0.45);
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(120, 113, 108, 0.7);
+  }
+}
+
+/* ================= PRINT / PDF GENERATION STYLES ================= */
+@media print {
+  html, body {
+    background: #ffffff !important;
+    color: #000000 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    height: auto !important;
+    min-height: auto !important;
+    overflow: visible !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* Hide headers, sidebars, POS controls, action buttons, close buttons */
+  .no-print,
+  .no-print * {
+    display: none !important;
+    visibility: hidden !important;
+  }
+
+  /* Ensure modal backdrop and scroll containers don't collapse or hide */
+  .fixed.inset-0 {
+    position: static !important;
+    background: transparent !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    overflow: visible !important;
+    display: block !important;
+    width: 100% !important;
+    height: auto !important;
+    max-height: none !important;
+  }
+
+  .fixed.inset-0 > div {
+    max-height: none !important;
+    height: auto !important;
+    box-shadow: none !important;
+    border: none !important;
+    overflow: visible !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: transparent !important;
+  }
+
+  /* Ensure invoice container prints cleanly */
+  #invoice-container,
+  #printable-receipt,
+  #printable-a4 {
+    display: block !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    box-shadow: none !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+    margin: 0 auto !important;
+  }
+
+  #printable-receipt {
+    width: 76mm !important;
+    max-width: 76mm !important;
+    padding: 2mm !important;
+    border: none !important;
+  }
+
+  #printable-a4 {
+    width: 100% !important;
+    max-width: 195mm !important;
+    padding: 4mm !important;
+    border: none !important;
+  }
+
+  @page {
+    margin: 0.5cm;
+    size: auto;
+  }
+}
