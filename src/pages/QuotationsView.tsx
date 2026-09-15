@@ -215,6 +215,237 @@ export const QuotationsView: React.FC = () => {
     }
   };
 
+  const handleDirectPrint = async (id: number) => {
+    try {
+      const res = await apiRequest<any>(`/api/quotations/${id}`);
+      if (res.success && res.data) {
+        handlePrintQuotation(res.data);
+      }
+    } catch (err) {
+      console.error('Error fetching quotation for print:', err);
+    }
+  };
+
+  const handlePrintQuotation = (q: any) => {
+    if (!q) return;
+    const quoteDateObj = new Date(q.created_at || Date.now());
+    const formattedQuoteDate = quoteDateObj.toLocaleDateString('en-PK', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+    });
+    const formattedQuoteTime = quoteDateObj.toLocaleTimeString('en-PK', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+    });
+    const fullDateTime = `${formattedQuoteDate} • ${formattedQuoteTime}`;
+    const validUntilDate = new Date(q.valid_until).toLocaleDateString('en-PK', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+    });
+
+    const itemsHtml = (q.items || []).map((it: any, idx: number) => `
+      <tr>
+        <td style="border: 1px solid #9ca3af; padding: 6px 8px; text-align: center;">${idx + 1}</td>
+        <td style="border: 1px solid #9ca3af; padding: 6px 8px;"><strong>${it.product_name}</strong> ${it.sku ? `<br><span style="font-size: 10px; color: #6b7280;">SKU: ${it.sku}</span>` : ''}</td>
+        <td style="border: 1px solid #9ca3af; padding: 6px 8px; text-align: center;">${it.quantity} ${it.unit || 'pcs'}</td>
+        <td style="border: 1px solid #9ca3af; padding: 6px 8px; text-align: right;">Rs. ${Number(it.unit_price || 0).toLocaleString()}</td>
+        <td style="border: 1px solid #9ca3af; padding: 6px 8px; text-align: right; font-weight: bold;">Rs. ${Number(it.line_total || 0).toLocaleString()}</td>
+      </tr>
+    `).join('');
+
+    const htmlContent = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Quotation #${q.quotation_number} - ${settings.store_name}</title>
+  <style>
+    @page {
+      size: A4 portrait;
+      margin: 10mm 10mm 15mm 10mm;
+      @bottom-right {
+        content: "Page " counter(page) " of " counter(pages);
+        font-size: 10px;
+        color: #4b5563;
+      }
+      @bottom-left {
+        content: "Printed: ${fullDateTime}";
+        font-size: 9px;
+        color: #6b7280;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 8mm;
+      background: #ffffff !important;
+      color: #000000 !important;
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 12px;
+      line-height: 1.4;
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
+    }
+    table { width: 100%; border-collapse: collapse; }
+    .header-tbl {
+      border-bottom: 2px solid #000000;
+      padding-bottom: 8px;
+      margin-bottom: 12px;
+    }
+    .store-title {
+      font-size: 18px;
+      font-weight: 900;
+      text-transform: uppercase;
+      margin-bottom: 2px;
+    }
+    .meta-box {
+      border: 1px solid #d1d5db;
+      background: #f9fafb !important;
+      padding: 8px 12px;
+      margin-bottom: 12px;
+      border-radius: 4px;
+    }
+    .items-table th {
+      border: 1px solid #9ca3af;
+      background-color: #f3f4f6 !important;
+      font-weight: bold;
+      font-size: 11px;
+      text-transform: uppercase;
+      padding: 6px 8px;
+    }
+    .totals-tbl {
+      width: 320px;
+      margin-left: auto;
+      margin-top: 10px;
+    }
+    .totals-tbl td { border: none; padding: 4px 6px; font-size: 12px; }
+    .grand-row td {
+      border-top: 2px solid #000 !important;
+      border-bottom: 2px solid #000 !important;
+      font-weight: 900;
+      font-size: 14px;
+    }
+    .signatures { margin-top: 35px; }
+    .signatures td { border: none; width: 50%; text-align: center; padding: 0 30px; }
+    .sign-line { border-top: 1px solid #4b5563; padding-top: 5px; font-size: 11px; color: #374151; }
+    .footer {
+      margin-top: 20px;
+      text-align: center;
+      font-size: 10.5px;
+      color: #4b5563;
+      border-top: 1px dashed #d1d5db;
+      padding-top: 8px;
+    }
+  </style>
+</head>
+<body>
+  <table class="header-tbl">
+    <tr>
+      <td>
+        <div class="store-title">${settings.store_name}</div>
+        <div><strong>Proprietor:</strong> ${settings.owner_name}</div>
+        <div>Hardware, Sanitary, Pipes, Paints & Building Materials</div>
+        <div>${settings.address}</div>
+        <div>Phone: ${settings.phone} ${settings.email ? `| Email: ${settings.email}` : ''}</div>
+      </td>
+      <td style="text-align: right;">
+        <div style="display: inline-block; background: #b45309; color: #fff; padding: 4px 10px; font-weight: bold; font-size: 11px; text-transform: uppercase; margin-bottom: 4px;">
+          PROJECT ESTIMATE / KACCHA BILL
+        </div>
+        <div style="font-size: 15px; font-weight: bold; font-family: monospace;">${q.quotation_number}</div>
+        <div style="color: #4b5563; font-size: 11px;">Date: <strong>${formattedQuoteDate}</strong></div>
+        <div style="color: #4b5563; font-size: 11px;">Time: <strong>${formattedQuoteTime}</strong></div>
+        <div style="color: #b45309; font-size: 11px; font-weight: bold;">Valid Until: ${validUntilDate}</div>
+      </td>
+    </tr>
+  </table>
+
+  <div class="meta-box">
+    <table>
+      <tr>
+        <td style="width: 50%;"><strong>Client / Contractor:</strong> ${q.customer_name || 'Valued Client'}</td>
+        <td style="width: 50%;"><strong>Project:</strong> ${q.project_title || 'General Construction'}</td>
+      </tr>
+      <tr>
+        <td><strong>Contact Phone:</strong> ${q.customer_phone || 'N/A'}</td>
+        <td><strong>Prepared By:</strong> ${q.creator_name || settings.owner_name || 'Admin'}</td>
+      </tr>
+    </table>
+  </div>
+
+  <table class="items-table">
+    <thead>
+      <tr>
+        <th style="width: 5%; text-align: center;">#</th>
+        <th style="width: 45%; text-align: left;">Item Description</th>
+        <th style="width: 15%; text-align: center;">Estimated Qty</th>
+        <th style="width: 15%; text-align: right;">Rate (Rs.)</th>
+        <th style="width: 20%; text-align: right;">Estimated Total (Rs.)</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${itemsHtml}
+    </tbody>
+  </table>
+
+  <table class="totals-tbl">
+    <tr><td>Subtotal:</td><td style="text-align: right;">Rs. ${Number(q.subtotal || 0).toLocaleString()}</td></tr>
+    ${q.discount_amount > 0 ? `<tr><td style="color: #b91c1c;">Discount:</td><td style="text-align: right; color: #b91c1c;">-Rs. ${Number(q.discount_amount).toLocaleString()}</td></tr>` : ''}
+    <tr class="grand-row"><td>ESTIMATED TOTAL:</td><td style="text-align: right;">Rs. ${Number(q.grand_total || 0).toLocaleString()}</td></tr>
+  </table>
+
+  ${q.notes ? `
+    <div style="margin-top: 15px; padding: 8px 12px; background: #fffbeb; border: 1px solid #fde68a; border-radius: 4px; font-size: 11px;">
+      <strong>Terms & Conditions:</strong> ${q.notes}
+    </div>
+  ` : ''}
+
+  <table class="signatures">
+    <tr>
+      <td><div class="sign-line">Client / Contractor Acceptance</div></td>
+      <td><div class="sign-line">Authorized Signatory (${settings.store_name})</div></td>
+    </tr>
+  </table>
+
+  <div class="footer">
+    ${settings.invoice_footer || 'Rates are subject to market fluctuations. Thank you for your business!'}<br>
+    Store Helpline: ${settings.phone} • Printed on: ${fullDateTime}
+    <div style="font-size: 9.5px; color: #6b7280; margin-top: 4px;">Page 1 of 1 • Official Quotation Estimate</div>
+  </div>
+</body>
+</html>`;
+
+    const existing = document.getElementById('quotation-hidden-frame');
+    if (existing) existing.remove();
+
+    const iframe = document.createElement('iframe');
+    iframe.id = 'quotation-hidden-frame';
+    iframe.style.position = 'fixed';
+    iframe.style.right = '0';
+    iframe.style.bottom = '0';
+    iframe.style.width = '0';
+    iframe.style.height = '0';
+    iframe.style.border = 'none';
+    iframe.style.visibility = 'hidden';
+    document.body.appendChild(iframe);
+
+    const doc = iframe.contentWindow?.document || iframe.contentDocument;
+    if (doc && iframe.contentWindow) {
+      doc.open();
+      doc.write(htmlContent);
+      doc.close();
+      setTimeout(() => {
+        iframe.contentWindow?.focus();
+        iframe.contentWindow?.print();
+        setTimeout(() => {
+          try { iframe.remove(); } catch (e) {}
+        }, 30000);
+      }, 250);
+    }
+  };
+
   const handleOpenConvert = (q: any) => {
     setConvertingQuotation(q);
     setConvertPaidAmount(q.grand_total);
@@ -419,9 +650,18 @@ export const QuotationsView: React.FC = () => {
                           type="button"
                           onClick={() => handleOpenView(q.id)}
                           className="p-1.5 text-stone-600 hover:text-stone-900 hover:bg-stone-200 rounded transition-colors"
-                          title="View & Print Estimate"
+                          title="View Details"
                         >
                           <Eye className="w-4 h-4" />
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleDirectPrint(q.id)}
+                          className="p-1.5 text-amber-700 hover:text-amber-900 hover:bg-amber-100 rounded transition-colors"
+                          title="Print Estimate Slip"
+                        >
+                          <Printer className="w-4 h-4" />
                         </button>
 
                         {q.status !== 'CONVERTED' && (
@@ -752,8 +992,8 @@ export const QuotationsView: React.FC = () => {
               <div className="flex items-center space-x-2">
                 <button
                   type="button"
-                  onClick={() => window.print()}
-                  className="inline-flex items-center space-x-1 px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded text-xs font-bold"
+                  onClick={() => handlePrintQuotation(viewingQuotation)}
+                  className="inline-flex items-center space-x-1 px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded text-xs font-bold shadow-xs cursor-pointer"
                 >
                   <Printer className="w-3.5 h-3.5" />
                   <span>Print Slip</span>
@@ -761,7 +1001,7 @@ export const QuotationsView: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setViewingQuotation(null)}
-                  className="text-stone-400 hover:text-white"
+                  className="text-stone-400 hover:text-white cursor-pointer"
                 >
                   <X className="w-5 h-5" />
                 </button>
@@ -806,7 +1046,7 @@ export const QuotationsView: React.FC = () => {
                     {viewingQuotation.quotation_number}
                   </div>
                   <div className="text-stone-500">
-                    Date: {new Date(viewingQuotation.created_at).toLocaleDateString('en-PK')}
+                    Date: {new Date(viewingQuotation.created_at).toLocaleDateString('en-PK')} • {new Date(viewingQuotation.created_at).toLocaleTimeString('en-PK', { hour: '2-digit', minute: '2-digit', hour12: true })}
                   </div>
                   <div className="text-stone-500">
                     Valid Until: {new Date(viewingQuotation.valid_until).toLocaleDateString('en-PK')}

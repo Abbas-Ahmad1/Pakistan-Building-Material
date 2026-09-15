@@ -334,7 +334,8 @@ class CustomersController
             ], 'Khata payment recorded and invoices settled successfully!', 201);
         } catch (\Throwable $e) {
             Database::rollBack();
-            Response::error('Failed to record customer payment: ' . $e->getMessage(), 500);
+            error_log("Failed to record customer payment: " . $e->getMessage());
+            Response::error('Unable to record customer payment. Please check details and try again.', 400);
         }
     }
 }

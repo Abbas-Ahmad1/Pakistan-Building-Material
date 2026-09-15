@@ -14,6 +14,7 @@ import {
   FileText,
   DollarSign,
   Layers,
+  RotateCcw,
 } from 'lucide-react';
 import { apiRequest } from '../services/api';
 import { Supplier, Product } from '../types';
@@ -51,6 +52,24 @@ export const PurchasesView: React.FC = () => {
   // Single Bill Details Modal
   const [selectedPurchase, setSelectedPurchase] = useState<any | null>(null);
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
+
+  // Purchase Return Modal State
+  const [returnPurchase, setReturnPurchase] = useState<any | null>(null);
+  const [returnItems, setReturnItems] = useState<
+    {
+      product_id: number;
+      product_name: string;
+      quantity: number;
+      unit_cost: number;
+      max_qty: number;
+      return_qty: number;
+      reason: string;
+    }[]
+  >([]);
+  const [returnRefundType, setReturnRefundType] = useState<'LEDGER_CREDIT' | 'CASH'>('LEDGER_CREDIT');
+  const [returnReason, setReturnReason] = useState('Supplier defect / return');
+  const [isSubmittingReturn, setIsSubmittingReturn] = useState(false);
+  const [returnError, setReturnError] = useState<string | null>(null);
 
   const fetchData = async () => {
     setIsLoading(true);
@@ -105,12 +124,24 @@ export const PurchasesView: React.FC = () => {
       prev.map((item, i) => {
         if (i === index) {
           const updated = { ...item, [field]: value };
-          // If changing product_id, autofill default unit_cost
+          // If changing product_id, autofill default unit_cost and selling price
           if (field === 'product_id') {
             const p = products.find((prod) => prod.id === Number(value));
             if (p) {
               updated.unit_cost = p.purchase_price;
               updated.new_selling_price = p.selling_price;
+            }
+          }
+          // If changing unit_cost, recalculate suggested selling price
+          if (field === 'unit_cost') {
+            const p = products.find((prod) => prod.id === updated.product_id);
+            const cost = Number(value) || 0;
+            if (p && (p.auto_price_update || p.pricing_mode !== 'FIXED')) {
+              if (p.pricing_mode === 'MARKUP' && p.markup_percentage) {
+                updated.new_selling_price = Math.round(cost * (1 + p.markup_percentage / 100));
+              } else if (p.pricing_mode === 'MARGIN' && p.margin_percentage && p.margin_percentage < 100) {
+                updated.new_selling_price = Math.round(cost / (1 - p.margin_percentage / 100));
+              }
             }
           }
           return updated;
@@ -189,6 +220,78 @@ export const PurchasesView: React.FC = () => {
       console.error('Error fetching purchase details:', err);
     } finally {
       setIsLoadingDetails(false);
+    }
+  };
+
+  const openReturnModal = async (id: number) => {
+    setIsLoadingDetails(true);
+    setReturnError(null);
+    try {
+      const res = await apiRequest<any>(`/api/purchases/${id}`);
+      if (res.success && res.data) {
+        setReturnPurchase(res.data);
+        setReturnItems(
+          (res.data.items || []).map((it: any) => ({
+            product_id: it.product_id,
+            product_name: it.product_name,
+            quantity: it.quantity,
+            unit_cost: it.unit_cost,
+            max_qty: it.quantity,
+            return_qty: 0,
+            reason: '',
+          }))
+        );
+      }
+    } catch (err: any) {
+      console.error('Error loading purchase for return:', err);
+    } finally {
+      setIsLoadingDetails(false);
+    }
+  };
+
+  const handleProcessPurchaseReturn = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!returnPurchase) return;
+    setReturnError(null);
+
+    const itemsToReturn = returnItems.filter((it) => it.return_qty > 0);
+    if (itemsToReturn.length === 0) {
+      setReturnError('Please specify return quantity (> 0) for at least one item.');
+      return;
+    }
+
+    for (const it of itemsToReturn) {
+      if (it.return_qty > it.max_qty) {
+        setReturnError(`Cannot return ${it.return_qty} units of "${it.product_name}". Maximum purchased was ${it.max_qty}.`);
+        return;
+      }
+    }
+
+    setIsSubmittingReturn(true);
+    try {
+      const res = await apiRequest<any>(`/api/purchases/${returnPurchase.id}/returns`, {
+        method: 'POST',
+        body: JSON.stringify({
+          items: itemsToReturn.map((it) => ({
+            product_id: it.product_id,
+            quantity: it.return_qty,
+            unit_cost: it.unit_cost,
+            reason: it.reason || returnReason,
+          })),
+          refund_type: returnRefundType,
+          reason: returnReason,
+        }),
+      });
+
+      if (res.success) {
+        setReturnPurchase(null);
+        setSelectedPurchase(null);
+        await fetchData();
+      }
+    } catch (err: any) {
+      setReturnError(err.message || 'Failed to process supplier return.');
+    } finally {
+      setIsSubmittingReturn(false);
     }
   };
 
@@ -369,14 +472,26 @@ export const PurchasesView: React.FC = () => {
                     </td>
 
                     <td className="py-3 px-4 text-center">
-                      <button
-                        type="button"
-                        onClick={() => openPurchaseDetails(po.id)}
-                        className="p-1.5 bg-stone-100 hover:bg-stone-200 text-stone-700 rounded-lg transition-colors inline-flex items-center space-x-1"
-                      >
-                        <FileText className="w-3.5 h-3.5" />
-                        <span className="text-[10px] font-semibold">Details</span>
-                      </button>
+                      <div className="flex items-center justify-center space-x-1">
+                        <button
+                          type="button"
+                          onClick={() => openPurchaseDetails(po.id)}
+                          className="p-1.5 bg-stone-100 hover:bg-stone-200 text-stone-700 rounded-lg transition-colors inline-flex items-center space-x-1"
+                          title="View Bill Details"
+                        >
+                          <FileText className="w-3.5 h-3.5" />
+                          <span className="text-[10px] font-semibold">Details</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => openReturnModal(po.id)}
+                          className="p-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200/60 rounded-lg transition-colors inline-flex items-center space-x-1"
+                          title="Return Stock to Supplier"
+                        >
+                          <RotateCcw className="w-3.5 h-3.5" />
+                          <span className="text-[10px] font-semibold">Return</span>
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))
@@ -448,68 +563,111 @@ export const PurchasesView: React.FC = () => {
                   </button>
                 </div>
 
-                <div className="space-y-2">
+                <div className="space-y-3">
                   {inwardItems.map((item, idx) => {
                     const currentProd = products.find((p) => p.id === item.product_id);
+                    const prevCost = currentProd?.purchase_price ?? 0;
+                    const costShift = prevCost > 0 ? ((item.unit_cost - prevCost) / prevCost) * 100 : 0;
+                    const hasCostShift = prevCost > 0 && Math.abs(costShift) > 0.01;
+
                     return (
                       <div
                         key={idx}
-                        className="p-3 bg-stone-50 border border-stone-200 rounded-lg grid grid-cols-12 gap-2 items-center text-xs"
+                        className="p-3 bg-stone-50 border border-stone-200 rounded-lg space-y-2 text-xs"
                       >
-                        <div className="col-span-12 sm:col-span-5">
-                          <label className="block text-[10px] text-stone-500 mb-0.5">Product</label>
-                          <select
-                            value={item.product_id}
-                            onChange={(e) => updateLineItem(idx, 'product_id', Number(e.target.value))}
-                            className="w-full p-1.5 border border-stone-300 rounded text-xs font-medium"
-                          >
-                            {products.map((p) => (
-                              <option key={p.id} value={p.id}>
-                                {p.name} (Current Stock: {p.current_stock} {p.unit})
-                              </option>
-                            ))}
-                          </select>
+                        <div className="grid grid-cols-12 gap-2 items-center">
+                          <div className="col-span-12 sm:col-span-5">
+                            <label className="block text-[10px] text-stone-500 mb-0.5">Product</label>
+                            <select
+                              value={item.product_id}
+                              onChange={(e) => updateLineItem(idx, 'product_id', Number(e.target.value))}
+                              className="w-full p-1.5 border border-stone-300 rounded text-xs font-medium bg-white"
+                            >
+                              {products.map((p) => (
+                                <option key={p.id} value={p.id}>
+                                  {p.name} (Stock: {p.current_stock} {p.unit} | Cost: Rs. {p.purchase_price})
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          <div className="col-span-4 sm:col-span-2">
+                            <label className="block text-[10px] text-stone-500 mb-0.5">
+                              Qty ({currentProd?.unit || 'Unit'})
+                            </label>
+                            <input
+                              type="number"
+                              min="1"
+                              value={item.quantity}
+                              onChange={(e) => updateLineItem(idx, 'quantity', Number(e.target.value))}
+                              className="w-full p-1.5 border border-stone-300 rounded font-bold bg-white"
+                            />
+                          </div>
+
+                          <div className="col-span-4 sm:col-span-2">
+                            <label className="block text-[10px] text-stone-500 mb-0.5">Cost Rate (Rs.)</label>
+                            <input
+                              type="number"
+                              min="0"
+                              value={item.unit_cost}
+                              onChange={(e) => updateLineItem(idx, 'unit_cost', Number(e.target.value))}
+                              className="w-full p-1.5 border border-stone-300 rounded font-bold bg-white"
+                            />
+                          </div>
+
+                          <div className="col-span-3 sm:col-span-2 text-right">
+                            <span className="block text-[10px] text-stone-500 mb-0.5">Line Total</span>
+                            <span className="font-bold text-stone-900">
+                              Rs. {(item.quantity * item.unit_cost).toLocaleString()}
+                            </span>
+                          </div>
+
+                          <div className="col-span-1 text-center">
+                            <button
+                              type="button"
+                              onClick={() => removeLineItem(idx)}
+                              className="p-1 text-stone-400 hover:text-rose-600"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
                         </div>
 
-                        <div className="col-span-4 sm:col-span-2">
-                          <label className="block text-[10px] text-stone-500 mb-0.5">
-                            Qty ({currentProd?.unit || 'Unit'})
-                          </label>
-                          <input
-                            type="number"
-                            min="1"
-                            value={item.quantity}
-                            onChange={(e) => updateLineItem(idx, 'quantity', Number(e.target.value))}
-                            className="w-full p-1.5 border border-stone-300 rounded font-bold"
-                          />
-                        </div>
+                        {/* Pricing Context & Dynamic Auto-Update Row */}
+                        <div className="pt-2 border-t border-stone-200/80 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                          <div className="flex items-center space-x-2">
+                            <span className="text-stone-500">
+                              Previous Cost: <strong className="font-mono text-stone-700">Rs. {prevCost.toLocaleString()}</strong>
+                            </span>
+                            {hasCostShift && (
+                              <span
+                                className={`px-1.5 py-0.5 rounded font-mono font-bold text-[10px] ${
+                                  costShift > 0
+                                    ? 'bg-rose-100 text-rose-800'
+                                    : 'bg-emerald-100 text-emerald-800'
+                                }`}
+                              >
+                                {costShift > 0 ? `+${costShift.toFixed(1)}% Increase` : `${costShift.toFixed(1)}% Decrease`}
+                              </span>
+                            )}
+                            {currentProd?.auto_price_update ? (
+                              <span className="bg-amber-100 text-amber-900 font-bold px-1.5 py-0.5 rounded text-[9px]">
+                                ⚡ Auto-Price ({currentProd.pricing_mode || 'MARKUP'})
+                              </span>
+                            ) : null}
+                          </div>
 
-                        <div className="col-span-4 sm:col-span-2">
-                          <label className="block text-[10px] text-stone-500 mb-0.5">Cost Rate (Rs.)</label>
-                          <input
-                            type="number"
-                            min="0"
-                            value={item.unit_cost}
-                            onChange={(e) => updateLineItem(idx, 'unit_cost', Number(e.target.value))}
-                            className="w-full p-1.5 border border-stone-300 rounded font-bold"
-                          />
-                        </div>
-
-                        <div className="col-span-3 sm:col-span-2 text-right">
-                          <span className="block text-[10px] text-stone-500 mb-0.5">Total</span>
-                          <span className="font-bold text-stone-900">
-                            Rs. {(item.quantity * item.unit_cost).toLocaleString()}
-                          </span>
-                        </div>
-
-                        <div className="col-span-1 text-center">
-                          <button
-                            type="button"
-                            onClick={() => removeLineItem(idx)}
-                            className="p-1 text-stone-400 hover:text-rose-600"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
+                          <div className="flex items-center space-x-1.5">
+                            <label className="text-stone-500 text-[10px]">New Selling Price (Rs.):</label>
+                            <input
+                              type="number"
+                              min="0"
+                              value={item.new_selling_price || ''}
+                              onChange={(e) => updateLineItem(idx, 'new_selling_price', Number(e.target.value))}
+                              placeholder={currentProd ? String(currentProd.selling_price) : '0'}
+                              className="w-24 p-1 border border-stone-300 rounded font-bold font-mono text-amber-950 bg-white text-right text-xs"
+                            />
+                          </div>
                         </div>
                       </div>
                     );
@@ -649,6 +807,12 @@ export const PurchasesView: React.FC = () => {
                 <span>Grand Total:</span>
                 <span>Rs. {selectedPurchase.grand_total?.toLocaleString()}</span>
               </div>
+              {selectedPurchase.returned_amount > 0 && (
+                <div className="flex justify-between text-amber-700 font-bold">
+                  <span>Returned to Supplier:</span>
+                  <span>- Rs. {selectedPurchase.returned_amount?.toLocaleString()}</span>
+                </div>
+              )}
               <div className="flex justify-between text-emerald-700 font-bold">
                 <span>Paid:</span>
                 <span>Rs. {selectedPurchase.paid_amount?.toLocaleString()}</span>
@@ -658,6 +822,162 @@ export const PurchasesView: React.FC = () => {
                 <span>Rs. {selectedPurchase.due_amount?.toLocaleString()}</span>
               </div>
             </div>
+
+            <div className="flex justify-between items-center pt-3 border-t border-stone-100">
+              <button
+                type="button"
+                onClick={() => {
+                  const pId = selectedPurchase.id;
+                  setSelectedPurchase(null);
+                  openReturnModal(pId);
+                }}
+                className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-xs font-bold inline-flex items-center space-x-1"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>Return Items to Supplier</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSelectedPurchase(null)}
+                className="px-4 py-1.5 bg-stone-100 hover:bg-stone-200 text-stone-700 rounded-lg text-xs font-semibold"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ================= MODAL: RETURN ITEMS TO SUPPLIER ================= */}
+      {returnPurchase && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-stone-900/60 backdrop-blur-xs p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-xl w-full p-6 space-y-4 max-h-[90vh] flex flex-col overflow-hidden">
+            <div className="flex justify-between items-start border-b border-stone-100 pb-3">
+              <div>
+                <div className="flex items-center space-x-2">
+                  <RotateCcw className="w-5 h-5 text-rose-600" />
+                  <h3 className="text-base font-black text-stone-900">Return Stock to Supplier</h3>
+                </div>
+                <p className="text-xs text-stone-500 mt-0.5">
+                  Purchase: <strong className="text-stone-700">{returnPurchase.purchase_number}</strong> | Supplier: {returnPurchase.supplier_company || returnPurchase.supplier_name}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setReturnPurchase(null)}
+                className="text-stone-400 hover:text-stone-700"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {returnError && (
+              <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg text-xs text-rose-700 flex items-center space-x-2">
+                <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
+                <span>{returnError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleProcessPurchaseReturn} className="space-y-4 overflow-y-auto flex-1 pr-1">
+              <div>
+                <label className="block text-xs font-bold text-stone-700 mb-2">Select Items to Return:</label>
+                <div className="space-y-2">
+                  {returnItems.map((item, idx) => (
+                    <div key={item.product_id} className="p-3 bg-stone-50 border border-stone-200 rounded-lg space-y-2">
+                      <div className="flex justify-between items-start text-xs">
+                        <span className="font-bold text-stone-900">{item.product_name}</span>
+                        <span className="text-stone-500 text-[11px]">Cost: Rs. {item.unit_cost.toLocaleString()}</span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <div>
+                          <label className="block text-[10px] text-stone-500 mb-0.5">
+                            Return Qty (Max: {item.max_qty})
+                          </label>
+                          <input
+                            type="number"
+                            min="0"
+                            max={item.max_qty}
+                            value={item.return_qty || ''}
+                            onChange={(e) => {
+                              const val = Math.min(item.max_qty, Math.max(0, Number(e.target.value) || 0));
+                              setReturnItems((prev) =>
+                                prev.map((it, i) => (i === idx ? { ...it, return_qty: val } : it))
+                              );
+                            }}
+                            placeholder="0"
+                            className="w-full p-1.5 border border-stone-300 rounded font-bold bg-white text-xs"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] text-stone-500 mb-0.5">Item Defect / Reason</label>
+                          <input
+                            type="text"
+                            value={item.reason}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setReturnItems((prev) =>
+                                prev.map((it, i) => (i === idx ? { ...it, reason: val } : it))
+                              );
+                            }}
+                            placeholder="e.g. Expired / Damaged"
+                            className="w-full p-1.5 border border-stone-300 rounded bg-white text-xs"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 text-xs">
+                <div>
+                  <label className="block font-bold text-stone-700 mb-1">Refund Settlement:</label>
+                  <select
+                    value={returnRefundType}
+                    onChange={(e: any) => setReturnRefundType(e.target.value)}
+                    className="w-full p-2 border border-stone-300 rounded-lg bg-white"
+                  >
+                    <option value="LEDGER_CREDIT">Vendor Ledger Credit (Katoti)</option>
+                    <option value="CASH">Cash Refund Received</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block font-bold text-stone-700 mb-1">General Reason:</label>
+                  <input
+                    type="text"
+                    value={returnReason}
+                    onChange={(e) => setReturnReason(e.target.value)}
+                    className="w-full p-2 border border-stone-300 rounded-lg bg-white text-xs"
+                  />
+                </div>
+              </div>
+
+              {/* Total return calculation */}
+              <div className="p-3 bg-rose-50/70 border border-rose-200/60 rounded-lg flex justify-between items-center text-xs">
+                <span className="font-bold text-rose-900">Total Return Credit Amount:</span>
+                <span className="text-base font-black text-rose-900">
+                  Rs. {returnItems.reduce((sum, it) => sum + it.return_qty * it.unit_cost, 0).toLocaleString()}
+                </span>
+              </div>
+
+              <div className="flex justify-end space-x-2 pt-2 border-t border-stone-100">
+                <button
+                  type="button"
+                  onClick={() => setReturnPurchase(null)}
+                  className="px-4 py-2 border border-stone-300 text-stone-700 rounded-lg text-xs font-semibold hover:bg-stone-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmittingReturn}
+                  className="px-5 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-bold transition-colors disabled:opacity-50"
+                >
+                  {isSubmittingReturn ? 'Deducting Stock...' : 'Confirm Supplier Return'}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

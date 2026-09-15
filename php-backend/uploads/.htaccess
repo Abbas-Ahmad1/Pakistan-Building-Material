@@ -1,0 +1,35 @@
+# ==============================================================================
+# Security Lockdown for Uploads Directory
+# ==============================================================================
+# Prevents execution of any PHP, CGI, or shell scripts in this directory.
+# Only legitimate static image files are served.
+
+Options -ExecCGI -Indexes
+
+# Disable script handlers
+<IfModule mod_php.c>
+    php_flag engine off
+</IfModule>
+<IfModule mod_php7.c>
+    php_flag engine off
+</IfModule>
+<IfModule mod_php8.c>
+    php_flag engine off
+</IfModule>
+
+# Deny execution of script extensions
+<FilesMatch "(?i)\.(php|phtml|php3|php4|php5|php7|php8|phps|cgi|pl|py|sh|bash|exe|bat|cmd|dll|bin|jsp|asp|aspx)$">
+    Order Deny,Allow
+    Deny from all
+</FilesMatch>
+
+# Only permit safe image file extensions
+<FilesMatch "(?i)\.(jpg|jpeg|png|webp|gif|svg|ico)$">
+    Order Allow,Deny
+    Allow from all
+</FilesMatch>
+
+# Enforce no-sniff headers
+<IfModule mod_headers.c>
+    Header set X-Content-Type-Options "nosniff"
+</IfModule>

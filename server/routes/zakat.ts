@@ -1,22 +1,16 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../db/database.js';
 import { verifySession } from './auth.js';
+import { InventoryBatchHelper } from '../utils/inventoryBatch.js';
 
 export const zakatRouter = Router();
 
 // GET /api/zakat/calculate - Live estimation from real store database
 zakatRouter.get('/calculate', (_req: Request, res: Response): any => {
   try {
-    // 1. Inventory Value at Cost (Wholesale/Purchase price as required in commercial Fiqh)
-    const invRow = db.prepare(`
-      SELECT 
-        COALESCE(SUM(current_stock * purchase_price), 0) as total_inventory_cost,
-        COUNT(*) as total_items_count
-      FROM products
-      WHERE status = 'active' AND current_stock > 0
-    `).get() as any;
-
-    const inventoryValue = invRow?.total_inventory_cost || 0;
+    // 1. Inventory Value at Cost (True batch-based valuation)
+    const invValuation = InventoryBatchHelper.calculateInventoryValuation({ status: 'active' });
+    const inventoryValue = invValuation.total_cost_value;
 
     // 2. Customer Receivables (Total uncollected market udhaar)
     const custRow = db.prepare(`
@@ -56,7 +50,7 @@ zakatRouter.get('/calculate', (_req: Request, res: Response): any => {
       success: true,
       data: {
         inventory_value: inventoryValue,
-        items_count: invRow?.total_items_count || 0,
+        items_count: invValuation.total_items,
         receivables_value: receivablesValue,
         debtors_count: custRow?.debtors_count || 0,
         liabilities_value: liabilitiesValue,

@@ -17,13 +17,14 @@ export const Login: React.FC<LoginProps> = ({ onBackToWebsite }) => {
   const [password, setPassword] = useState('');
   const [selectedBranchId, setSelectedBranchId] = useState<number>(1);
   const [showPassword, setShowPassword] = useState(false);
-  const [error, setError] = useState<{ title: string; detail: string } | null>(null);
+  const [feedback, setFeedback] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Switch slot when user clicks on Admin or Cashier card
   const handleSelectSlot = (role: 'admin' | 'cashier') => {
+    if (isSubmitting) return;
     setSelectedRole(role);
-    setError(null);
+    setFeedback(null);
     if (role === 'admin') {
       setUsername('admin');
       setPassword('');
@@ -35,6 +36,7 @@ export const Login: React.FC<LoginProps> = ({ onBackToWebsite }) => {
 
   // Quick fill default password for the active slot
   const handleQuickFillDefaults = () => {
+    if (isSubmitting) return;
     if (selectedRole === 'admin') {
       setUsername('admin');
       setPassword('admin123');
@@ -42,24 +44,45 @@ export const Login: React.FC<LoginProps> = ({ onBackToWebsite }) => {
       setUsername('cashier');
       setPassword('cashier123');
     }
-    setError(null);
+    setFeedback(null);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError(null);
+    if (isSubmitting) return;
+    setFeedback(null);
     setIsSubmitting(true);
 
-    const res = await login(username, password, selectedBranchId);
-    if (!res.success) {
-      setError({
-        title: 'Incorrect Username or Password',
-        detail:
-          res.message ||
-          'The username or password you entered is incorrect. Please check your credentials and try again.',
+    try {
+      const res = await login(username, password, selectedBranchId);
+      if (res.success) {
+        setFeedback({
+          type: 'success',
+          text: res.message || 'Login successful. Welcome back!',
+        });
+      } else {
+        const rawMsg = (res.message || '').toLowerCase();
+        let userMessage = 'Username or password is incorrect. Please try again.';
+
+        if (rawMsg.includes('inactive') || rawMsg.includes('deactivated') || rawMsg.includes('disabled')) {
+          userMessage = 'Your account is inactive. Please contact the administrator.';
+        } else if (rawMsg.includes('unable to connect') || rawMsg.includes('network') || rawMsg.includes('failed to fetch')) {
+          userMessage = 'Unable to connect to the server. Please try again.';
+        }
+
+        setFeedback({
+          type: 'error',
+          text: userMessage,
+        });
+        // Clear password field on error so user can re-enter cleanly
+        setPassword('');
+        setIsSubmitting(false);
+      }
+    } catch {
+      setFeedback({
+        type: 'error',
+        text: 'Unable to connect to the server. Please try again.',
       });
-      // Clear password field on error so user can re-enter cleanly
-      setPassword('');
       setIsSubmitting(false);
     }
   };
@@ -189,18 +212,31 @@ export const Login: React.FC<LoginProps> = ({ onBackToWebsite }) => {
             </div>
           </div>
 
-          {/* 2. PROMINENT ERROR ALERT (Wrong Username / Password) */}
-          {error && (
-            <div className="mb-5 rounded-xl bg-red-50 p-4 border-2 border-red-300 shadow-xs animate-shake">
+          {/* 2. PROMINENT FEEDBACK ALERT (Success / Error) */}
+          {feedback && (
+            <div
+              className={`mb-5 rounded-xl p-4 border-2 shadow-xs transition-all ${
+                feedback.type === 'success'
+                  ? 'bg-emerald-50 border-emerald-300 text-emerald-900'
+                  : 'bg-red-50 border-red-300 text-red-900 animate-shake'
+              }`}
+            >
               <div className="flex items-start space-x-3">
-                <AlertCircle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
-                <div className="space-y-1">
-                  <div className="text-xs font-bold text-red-900">{error.title}</div>
-                  <div className="text-xs text-red-700 leading-relaxed font-medium">
-                    {error.detail}
+                {feedback.type === 'success' ? (
+                  <CheckCircle className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+                ) : (
+                  <AlertCircle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+                )}
+                <div className="space-y-0.5">
+                  <div className="text-xs font-bold">
+                    {feedback.type === 'success' ? 'Authenticated' : 'Authentication Failed'}
                   </div>
-                  <div className="text-[11px] text-red-600 pt-1 font-semibold flex items-center space-x-1">
-                    <span>⚠️ Please check your username and password, then try again.</span>
+                  <div
+                    className={`text-xs leading-relaxed font-medium ${
+                      feedback.type === 'success' ? 'text-emerald-700' : 'text-red-700'
+                    }`}
+                  >
+                    {feedback.text}
                   </div>
                 </div>
               </div>
@@ -225,15 +261,16 @@ export const Login: React.FC<LoginProps> = ({ onBackToWebsite }) => {
                 <input
                   type="text"
                   required
+                  disabled={isSubmitting}
                   value={username}
                   onChange={(e) => {
                     setUsername(e.target.value);
-                    if (error) setError(null);
+                    if (feedback) setFeedback(null);
                   }}
                   placeholder={selectedRole === 'admin' ? 'e.g. admin' : 'e.g. cashier'}
                   autoComplete="username"
-                  className={`block w-full pl-10 pr-3 py-2.5 border rounded-lg text-sm transition-all focus:outline-none focus:ring-2 ${
-                    error
+                  className={`block w-full pl-10 pr-3 py-2.5 border rounded-lg text-sm transition-all focus:outline-none focus:ring-2 disabled:opacity-60 ${
+                    feedback?.type === 'error'
                       ? 'border-red-400 bg-red-50/20 text-red-900 focus:ring-red-500'
                       : 'border-stone-300 placeholder-stone-400 focus:ring-amber-600 focus:border-transparent'
                   }`}
@@ -248,8 +285,9 @@ export const Login: React.FC<LoginProps> = ({ onBackToWebsite }) => {
                 </label>
                 <button
                   type="button"
+                  disabled={isSubmitting}
                   onClick={handleQuickFillDefaults}
-                  className="text-[10px] font-bold text-amber-800 hover:underline flex items-center space-x-1"
+                  className="text-[10px] font-bold text-amber-800 hover:underline flex items-center space-x-1 disabled:opacity-50"
                   title="Click to fill default password for this slot"
                 >
                   <KeyRound className="w-3 h-3 text-amber-700" />
@@ -263,23 +301,25 @@ export const Login: React.FC<LoginProps> = ({ onBackToWebsite }) => {
                 <input
                   type={showPassword ? 'text' : 'password'}
                   required
+                  disabled={isSubmitting}
                   value={password}
                   onChange={(e) => {
                     setPassword(e.target.value);
-                    if (error) setError(null);
+                    if (feedback) setFeedback(null);
                   }}
                   placeholder="••••••••"
                   autoComplete="current-password"
-                  className={`block w-full pl-10 pr-10 py-2.5 border rounded-lg text-sm transition-all focus:outline-none focus:ring-2 ${
-                    error
+                  className={`block w-full pl-10 pr-10 py-2.5 border rounded-lg text-sm transition-all focus:outline-none focus:ring-2 disabled:opacity-60 ${
+                    feedback?.type === 'error'
                       ? 'border-red-400 bg-red-50/20 text-red-900 focus:ring-red-500'
                       : 'border-stone-300 placeholder-stone-400 focus:ring-amber-600 focus:border-transparent'
                   }`}
                 />
                 <button
                   type="button"
+                  disabled={isSubmitting}
                   onClick={() => setShowPassword(!showPassword)}
-                  className="absolute inset-y-0 right-0 pr-3 flex items-center text-stone-400 hover:text-stone-600"
+                  className="absolute inset-y-0 right-0 pr-3 flex items-center text-stone-400 hover:text-stone-600 disabled:opacity-50"
                   tabIndex={-1}
                   title={showPassword ? 'Hide password' : 'Show password'}
                 >
@@ -298,9 +338,10 @@ export const Login: React.FC<LoginProps> = ({ onBackToWebsite }) => {
                   <Store className="w-4 h-4 text-stone-500" />
                 </div>
                 <select
+                  disabled={isSubmitting}
                   value={selectedBranchId}
                   onChange={(e) => setSelectedBranchId(Number(e.target.value))}
-                  className="block w-full pl-10 pr-3 py-2.5 border border-stone-300 rounded-lg text-sm bg-stone-50 font-medium text-stone-800 focus:outline-none focus:ring-2 focus:ring-amber-600 focus:bg-white transition-all"
+                  className="block w-full pl-10 pr-3 py-2.5 border border-stone-300 rounded-lg text-sm bg-stone-50 font-medium text-stone-800 focus:outline-none focus:ring-2 focus:ring-amber-600 focus:bg-white transition-all disabled:opacity-60"
                 >
                   {branches && branches.length > 0 ? (
                     branches.map((b) => (
@@ -334,7 +375,7 @@ export const Login: React.FC<LoginProps> = ({ onBackToWebsite }) => {
               {isSubmitting ? (
                 <span className="flex items-center space-x-2">
                   <RefreshCw className="w-4 h-4 animate-spin" />
-                  <span>Verifying credentials...</span>
+                  <span>Signing in...</span>
                 </span>
               ) : (
                 <span className="flex items-center space-x-2">

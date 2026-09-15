@@ -5,6 +5,8 @@ namespace App\Controllers;
 
 use App\Core\Auth;
 use App\Core\Database;
+use App\Core\InvoiceHelper;
+use App\Core\InventoryBatchHelper;
 use App\Core\Request;
 use App\Core\Response;
 use PDO;
@@ -247,9 +249,7 @@ class PurchasesController
 
         try {
             // 1. Generate Unique PO Number: PO-YYYYMMDD-XXXX
-            $datePrefix = date('Ymd');
-            $poCount = (int)$pdo->query("SELECT COUNT(*) FROM purchases WHERE purchase_number LIKE 'PO-{$datePrefix}-%'")->fetchColumn() + 1;
-            $poNumber = sprintf("PO-%s-%04d", $datePrefix, $poCount);
+            $poNumber = InvoiceHelper::generatePurchaseNumber($pdo);
 
             // 2. Insert Purchases Master
             $insPO = $pdo->prepare("
@@ -318,14 +318,28 @@ class PurchasesController
                 // Insert item
                 $insItem->execute([$purchaseId, $pId, $qty, $unitCost, $lineTotal]);
 
-                // Update product stock and update latest purchase price
-                $updateProductStock->execute([$qty, $unitCost, $pId]);
+                // Update product current_stock
+                $pdo->prepare("UPDATE products SET current_stock = current_stock + ?, updated_at = NOW() WHERE id = ?")->execute([$qty, $pId]);
                 $updateBranchStock->execute([$branchId, $pId, $qty]);
+
+                // Process dynamic batch tracking, cost history, and automatic price updates
+                $batchResult = InventoryBatchHelper::processStockInward(
+                    $pdo,
+                    $pId,
+                    $branchId,
+                    $qty,
+                    $unitCost,
+                    $purchaseId,
+                    $supplierId,
+                    $it['batch_number'] ?? null,
+                    $session['userId'],
+                    'PURCHASE_ORDER'
+                );
 
                 // Inventory transaction audit
                 $invTxStmt->execute([
                     $pId, $purchaseId, $qty, $unitCost, $stockBefore, $stockAfter,
-                    "Stock inward from PO #{$poNumber}", $session['userId'], $branchId
+                    "Stock inward from PO #{$poNumber} (Batch: {$batchResult['batch_number']})", $session['userId'], $branchId
                 ]);
             }
 
@@ -371,7 +385,11 @@ class PurchasesController
             ], "Purchase order #{$poNumber} created and stock updated successfully!", 201);
         } catch (\Throwable $e) {
             Database::rollBack();
-            Response::error('Failed to record purchase order: ' . $e->getMessage(), 500);
+            error_log("Failed to record purchase order: " . $e->getMessage());
+            $userMsg = str_contains($e->getMessage(), 'not found in catalog')
+                ? $e->getMessage()
+                : 'Unable to process purchase order. Please verify items and try again.';
+            Response::error($userMsg, 400);
         }
     }
 }

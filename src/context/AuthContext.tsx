@@ -72,11 +72,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setToken(res.data.token);
       setUser(res.data.user);
       setIsLoading(false);
-      return { success: true };
+      return { success: true, message: res.message || 'Login successful. Welcome back!' };
     }
 
     setIsLoading(false);
-    return { success: false, message: res.message || 'Login failed' };
+    return { success: false, message: res.message || 'Username or password is incorrect. Please try again.' };
   };
 
   const logout = async () => {

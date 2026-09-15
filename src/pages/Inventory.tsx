@@ -5,6 +5,8 @@ import { apiRequest } from '../services/api';
 import { Product, InventorySummary, InventoryTransaction } from '../types';
 import { StockAdjustmentModal } from '../components/inventory/StockAdjustmentModal';
 import { ProductDetailModal } from '../components/products/ProductDetailModal';
+import { BulkPriceModal } from '../components/products/BulkPriceModal';
+import { PriceHistoryModal } from '../components/products/PriceHistoryModal';
 import {
   Boxes,
   TrendingUp,
@@ -51,6 +53,9 @@ export const Inventory: React.FC<InventoryProps> = ({ onNavigate }) => {
   const [isAdjustModalOpen, setIsAdjustModalOpen] = useState(false);
   const [detailProductId, setDetailProductId] = useState<number | null>(null);
   const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
+  const [priceHistoryProduct, setPriceHistoryProduct] = useState<Product | null>(null);
+  const [isPriceHistoryOpen, setIsPriceHistoryOpen] = useState(false);
+  const [isBulkPriceOpen, setIsBulkPriceOpen] = useState(false);
 
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
@@ -146,17 +151,29 @@ export const Inventory: React.FC<InventoryProps> = ({ onNavigate }) => {
           )}
 
           {isAdmin && (
-            <button
-              type="button"
-              onClick={() => {
-                setSelectedProduct(null);
-                setIsAdjustModalOpen(true);
-              }}
-              className="flex items-center space-x-1.5 px-4 py-2 bg-amber-800 hover:bg-amber-900 text-white rounded-lg text-xs font-semibold shadow-xs transition-colors"
-            >
-              <Boxes className="w-4 h-4" />
-              <span>Stock Adjustment</span>
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={() => setIsBulkPriceOpen(true)}
+                className="flex items-center space-x-1.5 px-3 py-2 bg-stone-900 hover:bg-stone-800 text-white rounded-lg text-xs font-semibold shadow-xs transition-colors"
+                title="Bulk adjust selling prices across catalog"
+              >
+                <SlidersHorizontal className="w-4 h-4 text-amber-400" />
+                <span>Bulk Price Adjust</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedProduct(null);
+                  setIsAdjustModalOpen(true);
+                }}
+                className="flex items-center space-x-1.5 px-4 py-2 bg-amber-800 hover:bg-amber-900 text-white rounded-lg text-xs font-semibold shadow-xs transition-colors"
+              >
+                <Boxes className="w-4 h-4" />
+                <span>Stock Adjustment</span>
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -442,17 +459,31 @@ export const Inventory: React.FC<InventoryProps> = ({ onNavigate }) => {
                               <Eye className="w-3.5 h-3.5" />
                             </button>
                             {isAdmin && (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setSelectedProduct(p);
-                                  setIsAdjustModalOpen(true);
-                                }}
-                                className="px-2.5 py-1 bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-900 rounded text-[10px] font-bold flex items-center space-x-1 transition-colors"
-                              >
-                                <Boxes className="w-3 h-3" />
-                                <span>Adjust</span>
-                              </button>
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setPriceHistoryProduct(p);
+                                    setIsPriceHistoryOpen(true);
+                                  }}
+                                  title="Price & Cost History"
+                                  className="p-1.5 text-amber-800 hover:text-amber-950 hover:bg-amber-100/80 rounded transition-colors"
+                                >
+                                  <History className="w-3.5 h-3.5" />
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setSelectedProduct(p);
+                                    setIsAdjustModalOpen(true);
+                                  }}
+                                  className="px-2.5 py-1 bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-900 rounded text-[10px] font-bold flex items-center space-x-1 transition-colors"
+                                >
+                                  <Boxes className="w-3 h-3" />
+                                  <span>Adjust</span>
+                                </button>
+                              </>
                             )}
                           </div>
                         </td>
@@ -587,6 +618,29 @@ export const Inventory: React.FC<InventoryProps> = ({ onNavigate }) => {
         }}
         onEditProduct={() => {
           setIsDetailModalOpen(false);
+        }}
+      />
+
+      <PriceHistoryModal
+        productId={priceHistoryProduct?.id || null}
+        productName={priceHistoryProduct?.name}
+        productSku={priceHistoryProduct?.sku}
+        isOpen={isPriceHistoryOpen}
+        onClose={() => {
+          setIsPriceHistoryOpen(false);
+          setPriceHistoryProduct(null);
+        }}
+      />
+
+      <BulkPriceModal
+        isOpen={isBulkPriceOpen}
+        onClose={() => setIsBulkPriceOpen(false)}
+        onSuccess={(count) => {
+          refreshAll();
+          setNotification({
+            type: 'success',
+            text: `Updated retail pricing for ${count} product(s). Changes logged to audit history.`,
+          });
         }}
       />
     </div>

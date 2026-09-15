@@ -1,10 +1,11 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../db/database.js';
 import { verifySession } from './auth.js';
+import { InventoryBatchHelper } from '../utils/inventoryBatch.js';
 
 export const inventoryRouter = Router();
 
-// GET /api/inventory/summary - high-level valuation and stock counts
+// GET /api/inventory/summary - high-level batch-based valuation and stock counts
 inventoryRouter.get('/summary', (req: Request, res: Response): any => {
   try {
     const authHeader = req.headers.authorization;
@@ -12,30 +13,39 @@ inventoryRouter.get('/summary', (req: Request, res: Response): any => {
     const session = verifySession(token);
     const isAdmin = session?.role === 'ADMIN';
 
-    const stats = db
+    const branchId = req.query.branch_id ? Number(req.query.branch_id) : undefined;
+    const categoryId = req.query.category_id ? Number(req.query.category_id) : undefined;
+    const productId = req.query.product_id ? Number(req.query.product_id) : undefined;
+
+    // True batch-based inventory valuation: SUM(remaining_quantity * unit_cost)
+    const valuation = InventoryBatchHelper.calculateInventoryValuation({
+      branch_id: branchId,
+      category_id: categoryId,
+      product_id: productId,
+    });
+
+    const stockCounts = db
       .prepare(`
         SELECT 
-          COUNT(*) as total_items,
-          COALESCE(SUM(current_stock), 0) as total_units,
-          COALESCE(SUM(current_stock * purchase_price), 0) as total_cost_value,
-          COALESCE(SUM(current_stock * selling_price), 0) as total_retail_value,
           COALESCE(SUM(CASE WHEN current_stock <= 0 THEN 1 ELSE 0 END), 0) as out_of_stock_count,
           COALESCE(SUM(CASE WHEN current_stock > 0 AND current_stock <= minimum_stock THEN 1 ELSE 0 END), 0) as low_stock_count
         FROM products
         WHERE status != 'discontinued'
+          ${categoryId ? `AND category_id = ${categoryId}` : ''}
+          ${productId ? `AND id = ${productId}` : ''}
       `)
       .get() as any;
 
     return res.json({
       success: true,
       data: {
-        total_items: stats.total_items,
-        total_units: stats.total_units,
-        total_cost_value: isAdmin ? stats.total_cost_value : 0,
-        total_retail_value: stats.total_retail_value,
-        potential_profit: isAdmin ? stats.total_retail_value - stats.total_cost_value : 0,
-        out_of_stock_count: stats.out_of_stock_count,
-        low_stock_count: stats.low_stock_count,
+        total_items: valuation.total_items,
+        total_units: valuation.total_units,
+        total_cost_value: isAdmin ? valuation.total_cost_value : 0,
+        total_retail_value: valuation.total_retail_value,
+        potential_profit: isAdmin ? Math.round((valuation.total_retail_value - valuation.total_cost_value) * 100) / 100 : 0,
+        out_of_stock_count: stockCounts?.out_of_stock_count || 0,
+        low_stock_count: stockCounts?.low_stock_count || 0,
       },
     });
   } catch (error: any) {
@@ -188,6 +198,31 @@ inventoryRouter.post('/adjust', (req: Request, res: Response): any => {
       );
 
       transId = transInfo.lastInsertRowid;
+
+      // Sync inventory batches
+      if (adjustment_type === 'ADJUSTMENT_IN') {
+        InventoryBatchHelper.processStockInward(
+          product.id,
+          branchId,
+          qty,
+          Number(product.purchase_price) || 0,
+          null,
+          null,
+          `BATCH-ADJ-${Date.now().toString(36).toUpperCase()}-${branchId}-${product.id}`,
+          session.userId,
+          'MANUAL_ADJUSTMENT'
+        );
+      } else {
+        try {
+          InventoryBatchHelper.consumeStockForSale(
+            product.id,
+            branchId,
+            qty,
+            Number(transId) || 0,
+            'FIFO'
+          );
+        } catch (_) {}
+      }
 
       db.prepare(`
         INSERT INTO audit_logs (user_id, action, module, record_id, details)

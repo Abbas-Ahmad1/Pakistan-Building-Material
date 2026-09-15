@@ -6,6 +6,8 @@ import { Product, Category, Supplier } from '../types';
 import { ProductFormModal } from '../components/products/ProductFormModal';
 import { ProductDetailModal } from '../components/products/ProductDetailModal';
 import { StockAdjustmentModal } from '../components/inventory/StockAdjustmentModal';
+import { PriceHistoryModal } from '../components/products/PriceHistoryModal';
+import { BulkPriceModal } from '../components/products/BulkPriceModal';
 import {
   Package,
   Search,
@@ -19,8 +21,11 @@ import {
   RefreshCw,
   CheckCircle2,
   TrendingUp,
+  TrendingDown,
   Tag,
   SlidersHorizontal,
+  History,
+  Calculator,
 } from 'lucide-react';
 
 interface ProductsProps {
@@ -53,6 +58,11 @@ export const Products: React.FC<ProductsProps> = ({ onNavigate }) => {
 
   const [adjustProduct, setAdjustProduct] = useState<Product | null>(null);
   const [isAdjustOpen, setIsAdjustOpen] = useState(false);
+
+  const [priceHistoryProduct, setPriceHistoryProduct] = useState<Product | null>(null);
+  const [isPriceHistoryOpen, setIsPriceHistoryOpen] = useState(false);
+
+  const [isBulkPriceOpen, setIsBulkPriceOpen] = useState(false);
 
   const [alertMessage, setAlertMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
@@ -135,17 +145,29 @@ export const Products: React.FC<ProductsProps> = ({ onNavigate }) => {
           </button>
 
           {isAdmin && (
-            <button
-              type="button"
-              onClick={() => {
-                setProductToEdit(null);
-                setIsFormOpen(true);
-              }}
-              className="flex items-center space-x-1.5 px-4 py-2 bg-amber-800 hover:bg-amber-900 text-white rounded-lg text-xs font-semibold shadow-xs transition-colors"
-            >
-              <Plus className="w-4 h-4" />
-              <span>Add New Product</span>
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={() => setIsBulkPriceOpen(true)}
+                className="flex items-center space-x-1.5 px-3 py-2 bg-stone-900 hover:bg-stone-800 text-white rounded-lg text-xs font-semibold shadow-xs transition-colors"
+                title="Bulk adjust selling prices across catalog or categories"
+              >
+                <SlidersHorizontal className="w-4 h-4 text-amber-400" />
+                <span>Bulk Price Adjust</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setProductToEdit(null);
+                  setIsFormOpen(true);
+                }}
+                className="flex items-center space-x-1.5 px-4 py-2 bg-amber-800 hover:bg-amber-900 text-white rounded-lg text-xs font-semibold shadow-xs transition-colors"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Add New Product</span>
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -381,23 +403,50 @@ export const Products: React.FC<ProductsProps> = ({ onNavigate }) => {
 
                       {/* Purchase Cost (Admin) */}
                       {isAdmin && (
-                        <td className="py-3 px-4 text-right font-mono text-stone-500">
-                          {formatCurrency(p.purchase_price)}
+                        <td className="py-3 px-4 text-right">
+                          <div className="font-mono text-stone-600 font-semibold text-xs">
+                            {formatCurrency(p.purchase_price)}
+                          </div>
+                          {p.cost_change_percent !== undefined && p.cost_change_percent !== 0 && (
+                            <span
+                              className={`inline-flex items-center text-[9px] font-mono font-bold px-1 rounded mt-0.5 ${
+                                p.cost_change_percent > 0
+                                  ? 'bg-red-50 text-red-700'
+                                  : 'bg-emerald-50 text-emerald-700'
+                              }`}
+                              title={`Previous cost: ${p.previous_cost}`}
+                            >
+                              {p.cost_change_percent > 0 ? (
+                                <TrendingUp className="w-2.5 h-2.5 mr-0.5" />
+                              ) : (
+                                <TrendingDown className="w-2.5 h-2.5 mr-0.5" />
+                              )}
+                              {p.cost_change_percent > 0 ? '+' : ''}
+                              {p.cost_change_percent}%
+                            </span>
+                          )}
                         </td>
                       )}
 
-                      {/* Margin % (Admin) */}
+                      {/* Margin % & Strategy (Admin) */}
                       {isAdmin && (
                         <td className="py-3 px-4 text-center">
                           <span className="text-[10px] font-bold font-mono text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">
                             +{margin}%
+                          </span>
+                          <span className="text-[9px] text-stone-400 uppercase font-mono block mt-0.5">
+                            {p.pricing_mode === 'MARKUP'
+                              ? `+${p.markup_percentage || 0}% MKP`
+                              : p.pricing_mode === 'MARGIN'
+                              ? `${p.margin_percentage || 0}% MGN`
+                              : 'FIXED'}
                           </span>
                         </td>
                       )}
 
                       {/* Actions */}
                       <td className="py-3 px-4 text-center">
-                        <div className="flex items-center justify-center space-x-1.5">
+                        <div className="flex items-center justify-center space-x-1">
                           <button
                             type="button"
                             onClick={() => {
@@ -415,11 +464,23 @@ export const Products: React.FC<ProductsProps> = ({ onNavigate }) => {
                               <button
                                 type="button"
                                 onClick={() => {
+                                  setPriceHistoryProduct(p);
+                                  setIsPriceHistoryOpen(true);
+                                }}
+                                title="Price & Cost History Trail"
+                                className="p-1.5 text-amber-800 hover:text-amber-950 hover:bg-amber-100/70 rounded transition-colors"
+                              >
+                                <History className="w-3.5 h-3.5" />
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => {
                                   setAdjustProduct(p);
                                   setIsAdjustOpen(true);
                                 }}
                                 title="Adjust Stock"
-                                className="p-1.5 text-amber-700 hover:text-amber-900 hover:bg-amber-50 rounded transition-colors"
+                                className="p-1.5 text-stone-600 hover:text-stone-900 hover:bg-stone-100 rounded transition-colors"
                               >
                                 <Boxes className="w-3.5 h-3.5" />
                               </button>
@@ -503,6 +564,31 @@ export const Products: React.FC<ProductsProps> = ({ onNavigate }) => {
         }}
         product={adjustProduct}
         allProducts={products}
+      />
+
+      <PriceHistoryModal
+        productId={priceHistoryProduct?.id || null}
+        productName={priceHistoryProduct?.name}
+        productSku={priceHistoryProduct?.sku}
+        isOpen={isPriceHistoryOpen}
+        onClose={() => {
+          setIsPriceHistoryOpen(false);
+          setPriceHistoryProduct(null);
+        }}
+      />
+
+      <BulkPriceModal
+        isOpen={isBulkPriceOpen}
+        onClose={() => setIsBulkPriceOpen(false)}
+        onSuccess={(count) => {
+          fetchProducts();
+          setAlertMessage({
+            type: 'success',
+            text: `Successfully updated retail prices for ${count} product(s). All shifts logged to audit trail.`,
+          });
+        }}
+        categories={categories}
+        suppliers={suppliers}
       />
     </div>
   );

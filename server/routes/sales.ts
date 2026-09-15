@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../db/database.js';
 import { verifySession } from './auth.js';
+import { InventoryBatchHelper } from '../utils/inventoryBatch.js';
 
 export const salesRouter = Router();
 
@@ -322,6 +323,12 @@ salesRouter.post('/', (req: Request, res: Response): any => {
       stockAfter: number;
     }[] = [];
 
+    // Fetch allow_negative_stock setting
+    const negStockRow = db.prepare(`SELECT value FROM settings WHERE key = 'allow_negative_stock'`).get() as any;
+    const allowNegativeStock = negStockRow
+      ? (negStockRow.value === '1' || negStockRow.value === 'true' || negStockRow.value === 'ON' || negStockRow.value === true)
+      : false;
+
     for (const item of items) {
       const prodId = Number(item.product_id);
       const qty = Number(item.quantity);
@@ -338,6 +345,32 @@ salesRouter.post('/', (req: Request, res: Response): any => {
 
       if (!product) {
         return res.status(400).json({ success: false, message: `Product ID ${prodId} not found.` });
+      }
+
+      // Check stock availability if allow_negative_stock = OFF
+      const branchStockRow = db.prepare('SELECT current_stock FROM branch_stocks WHERE branch_id = ? AND product_id = ?')
+        .get(targetBranchId, prodId) as any;
+      const availableStock = branchStockRow !== undefined && branchStockRow !== null
+        ? Number(branchStockRow.current_stock)
+        : Number(product.current_stock);
+
+      if (!allowNegativeStock && availableStock < qty) {
+        // Record audit rejection
+        try {
+          db.prepare(`
+            INSERT INTO audit_logs (user_id, action, module, record_id, details)
+            VALUES (?, 'NEGATIVE_STOCK_REJECTED', 'Sales', ?, ?)
+          `).run(
+            session.userId,
+            prodId,
+            `Sale rejected: Negative stock is disabled. Product "${product.name}" (ID: ${prodId}): Available: ${availableStock}, Requested: ${qty}`
+          );
+        } catch (_) {}
+
+        return res.status(400).json({
+          success: false,
+          message: `Insufficient stock. Available: ${availableStock}, Requested: ${qty}.`,
+        });
       }
 
       const price = !isNaN(unitPrice) && unitPrice > 0 ? unitPrice : product.selling_price;
@@ -366,8 +399,8 @@ salesRouter.post('/', (req: Request, res: Response): any => {
         discount: lineDisc,
         lineTotal,
         lineProfit: profit,
-        stockBefore: product.current_stock,
-        stockAfter: product.current_stock - qty,
+        stockBefore: availableStock,
+        stockAfter: availableStock - qty,
       });
     }
 
@@ -520,16 +553,30 @@ salesRouter.post('/', (req: Request, res: Response): any => {
         ) VALUES (?, 'SALE', 'SALE', ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
+      let totalPreciseCogs = 0;
       for (const item of validatedItems) {
+        // Consume stock via FIFO / AVCO batch allocation
+        const consumption = InventoryBatchHelper.consumeStockForSale(
+          item.productId,
+          branch.id,
+          item.quantity,
+          saleId
+        );
+
+        const actualUnitCost = consumption.effective_unit_cost > 0 ? consumption.effective_unit_cost : item.unitCost;
+        const actualLineCost = consumption.cogs > 0 ? consumption.cogs : Math.round(item.quantity * actualUnitCost * 100) / 100;
+        const actualLineProfit = Math.round((item.lineTotal - actualLineCost) * 100) / 100;
+        totalPreciseCogs += actualLineCost;
+
         const itemResult = insertItemStmt.run(
           saleId,
           item.productId,
           item.quantity,
-          item.unitCost,
+          actualUnitCost,
           item.unitPrice,
           item.discount,
           item.lineTotal,
-          item.lineProfit,
+          actualLineProfit,
           item.quantity,
           item.deliveredQuantity
         );
@@ -559,7 +606,7 @@ salesRouter.post('/', (req: Request, res: Response): any => {
           item.productId,
           saleId,
           -item.quantity,
-          item.unitCost,
+          actualUnitCost,
           item.stockBefore,
           item.stockAfter,
           `Sale Invoice ${invoiceNumber} at ${branch.name}`,
@@ -567,6 +614,11 @@ salesRouter.post('/', (req: Request, res: Response): any => {
           branch.id
         );
       }
+
+      // Update final reconciled COGS and gross profit on sale master
+      const reconciledGrossProfit = Math.round((grandTotal - totalPreciseCogs) * 100) / 100;
+      db.prepare('UPDATE sales SET cogs_total = ?, gross_profit = ? WHERE id = ?')
+        .run(totalPreciseCogs, reconciledGrossProfit, saleId);
 
       // 7. Update Customer Ledger
       const newTotalPurchases = (customer.total_purchases || 0) + grandTotal;
@@ -1442,6 +1494,8 @@ salesRouter.post('/:id/returns', (req: Request, res: Response): any => {
         WHERE id = ?
       `);
 
+      let totalReturnedCogs = 0;
+
       for (const item of validatedReturns) {
         insertReturnItemStmt.run(
           returnId,
@@ -1458,6 +1512,25 @@ salesRouter.post('/:id/returns', (req: Request, res: Response): any => {
 
         // Restock global product current_stock
         restockGlobalProductStockStmt.run(item.returnQty, item.productId);
+
+        // Restore inventory batch stock preserving historical cost layers
+        const restoreResult = InventoryBatchHelper.restoreStockForReturn(
+          item.productId,
+          saleBranchId,
+          item.returnQty,
+          returnId,
+          item.unitCost,
+          sale.id
+        );
+
+        let itemReturnedCogs = 0;
+        for (const rb of restoreResult.restoredToBatches) {
+          itemReturnedCogs += rb.quantity * rb.unit_cost;
+        }
+        if (restoreResult.restoredToBatches.length === 0) {
+          itemReturnedCogs = item.returnQty * item.unitCost;
+        }
+        totalReturnedCogs += itemReturnedCogs;
 
         // Record restock in inventory_transactions with branch_id
         insertTxStmt.run(
@@ -1487,11 +1560,7 @@ salesRouter.post('/:id/returns', (req: Request, res: Response): any => {
       const newPaidAmount = Math.max(0, Math.round((newNetTotal - newDueAmount) * 100) / 100);
       const newPaymentStatus = newDueAmount <= 0.01 ? 'PAID' : (newPaidAmount > 0 ? 'PARTIAL' : 'DUE');
 
-      // Adjust COGS and Gross Profit
-      let totalReturnedCogs = 0;
-      for (const item of validatedReturns) {
-        totalReturnedCogs += item.returnQty * item.unitCost;
-      }
+      // Adjust COGS and Gross Profit using exact returned batch costs
       const newCogs = Math.max(0, Math.round(((sale.cogs_total || 0) - totalReturnedCogs) * 100) / 100);
       const newGrossProfit = Math.max(0, Math.round((newNetTotal - newCogs) * 100) / 100);
 

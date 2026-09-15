@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../db/database.js';
 import { verifySession } from './auth.js';
+import { InventoryBatchHelper } from '../utils/inventoryBatch.js';
 
 export const dashboardRouter = Router();
 
@@ -39,19 +40,25 @@ dashboardRouter.get('/metrics', (req: Request, res: Response): any => {
       `)
       .get() as any;
 
-    // 2. Inventory Metrics
-    const inventoryRow = db
+    // 2. Inventory Metrics (True batch-based)
+    const valuation = InventoryBatchHelper.calculateInventoryValuation({ status: 'active' });
+    const stockCounts = db
       .prepare(`
         SELECT 
-          COUNT(*) as totalProducts,
-          COALESCE(SUM(current_stock * purchase_price), 0) as totalInventoryCostValue,
-          COALESCE(SUM(current_stock * selling_price), 0) as totalInventoryRetailValue,
           COUNT(CASE WHEN current_stock <= minimum_stock AND current_stock > 0 THEN 1 END) as lowStockCount,
           COUNT(CASE WHEN current_stock <= 0 THEN 1 END) as outOfStockCount
         FROM products
         WHERE status = 'active'
       `)
       .get() as any;
+
+    const inventoryRow = {
+      totalProducts: valuation.total_items,
+      totalInventoryCostValue: valuation.total_cost_value,
+      totalInventoryRetailValue: valuation.total_retail_value,
+      lowStockCount: stockCounts?.lowStockCount || 0,
+      outOfStockCount: stockCounts?.outOfStockCount || 0,
+    };
 
     // 3. Customers & Suppliers Ledgers
     const customerRow = db

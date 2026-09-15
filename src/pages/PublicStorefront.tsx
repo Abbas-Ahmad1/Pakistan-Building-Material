@@ -174,14 +174,14 @@ export const PublicStorefront: React.FC<PublicStorefrontProps> = ({
   const waNumber1 = cleanPhone(primaryPhone);
   const waNumber2 = cleanPhone(secondaryPhone);
 
-  // Generate WhatsApp inquiry link and save directly to SQLite backend
+  // Generate WhatsApp inquiry link and save quotation to backend
   const sendWhatsAppInquiry = async () => {
     if (cart.length === 0 || isSubmittingInquiry) return;
     setIsSubmittingInquiry(true);
 
     let createdQuotationNumber = '';
     try {
-      // 1. Save quotation automatically to SQLite backend database
+      // 1. Save quotation automatically to backend database
       const quotePayload = {
         customer_name: customerName.trim() || 'Online Customer / Contractor',
         customer_phone: customerPhone.trim() || 'Website Inquiry',

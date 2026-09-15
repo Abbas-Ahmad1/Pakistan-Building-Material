@@ -91,6 +91,14 @@ export interface Product {
   description: string;
   unit: ProductUnit;
   purchase_price: number;
+  previous_cost?: number;
+  cost_change_percent?: number;
+  pricing_mode?: 'FIXED' | 'MARKUP' | 'MARGIN';
+  markup_percentage?: number;
+  margin_percentage?: number;
+  auto_price_update?: boolean | number;
+  last_cost_update?: string;
+  weighted_avg_cost?: number;
   selling_price: number;
   wholesale_price: number;
   current_stock: number;
@@ -101,6 +109,67 @@ export interface Product {
   status: 'active' | 'inactive' | 'discontinued';
   created_at: string;
   updated_at?: string;
+}
+
+export interface ProductPriceHistory {
+  id: number;
+  product_id: number;
+  branch_id?: number;
+  branch_name?: string;
+  product_name?: string;
+  product_sku?: string;
+  old_cost: number;
+  new_cost: number;
+  cost_change_percent: number;
+  old_selling_price: number;
+  new_selling_price: number;
+  price_change_percent: number;
+  pricing_mode?: string;
+  reason?: string;
+  purchase_id?: number;
+  purchase_number?: string;
+  user_id?: number;
+  user_name?: string;
+  created_at: string;
+}
+
+export interface InventoryBatch {
+  id: number;
+  product_id: number;
+  branch_id: number;
+  branch_name?: string;
+  purchase_id?: number;
+  purchase_number?: string;
+  supplier_id?: number;
+  supplier_name?: string;
+  supplier_company?: string;
+  batch_number: string;
+  unit_cost: number;
+  initial_quantity: number;
+  remaining_quantity: number;
+  received_date: string;
+  expiry_date?: string;
+  notes?: string;
+  created_at: string;
+}
+
+export interface PriceChangeAlert {
+  id: number;
+  name: string;
+  sku: string;
+  unit: string;
+  category_name?: string;
+  current_cost: number;
+  previous_cost: number;
+  cost_change_percent: number;
+  selling_price: number;
+  pricing_mode: string;
+  markup_percentage: number;
+  margin_percentage: number;
+  auto_price_update: boolean | number;
+  last_cost_update?: string;
+  current_margin_percent: number;
+  current_stock: number;
 }
 
 export interface Customer {

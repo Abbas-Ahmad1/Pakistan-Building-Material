@@ -9,28 +9,35 @@ import {
   Download,
   DollarSign,
   TrendingUp,
+  TrendingDown,
   AlertCircle,
   RefreshCw,
   ExternalLink,
   MessageCircle,
+  SlidersHorizontal,
+  History,
 } from 'lucide-react';
 import { apiRequest } from '../services/api';
-import { Customer, Supplier } from '../types';
+import { Customer, Supplier, Product } from '../types';
 
 export const BusinessReportsView: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'summary' | 'inventory' | 'receivables' | 'payables'>('summary');
+  const [activeTab, setActiveTab] = useState<'summary' | 'inventory' | 'receivables' | 'payables' | 'price_alerts'>('summary');
   const [isLoading, setIsLoading] = useState(true);
   const [summaryData, setSummaryData] = useState<any>(null);
   const [customersWithDues, setCustomersWithDues] = useState<Customer[]>([]);
   const [suppliersWithDues, setSuppliersWithDues] = useState<Supplier[]>([]);
+  const [priceAlerts, setPriceAlerts] = useState<any[]>([]);
+  const [alertThreshold, setAlertThreshold] = useState<number>(5.0);
+  const [isLoadingAlerts, setIsLoadingAlerts] = useState(false);
 
   const fetchReports = async () => {
     setIsLoading(true);
     try {
-      const [sumRes, custRes, supRes] = await Promise.all([
+      const [sumRes, custRes, supRes, alertRes] = await Promise.all([
         apiRequest<any>('/api/reports/summary'),
         apiRequest<Customer[]>('/api/customers?has_dues=true'),
         apiRequest<Supplier[]>('/api/suppliers?has_payable=true'),
+        apiRequest<any[]>(`/api/reports/price-change-alerts?threshold=${alertThreshold}`),
       ]);
 
       if (sumRes.success && sumRes.data) {
@@ -42,10 +49,27 @@ export const BusinessReportsView: React.FC = () => {
       if (supRes.success && supRes.data) {
         setSuppliersWithDues(supRes.data);
       }
+      if (alertRes.success && alertRes.data) {
+        setPriceAlerts(alertRes.data);
+      }
     } catch (err) {
       console.error('Error fetching business reports:', err);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const fetchPriceAlerts = async (thresh: number) => {
+    setIsLoadingAlerts(true);
+    try {
+      const res = await apiRequest<any[]>(`/api/reports/price-change-alerts?threshold=${thresh}`);
+      if (res.success && res.data) {
+        setPriceAlerts(res.data);
+      }
+    } catch (err) {
+      console.error('Error fetching price alerts:', err);
+    } finally {
+      setIsLoadingAlerts(false);
     }
   };
 
@@ -87,6 +111,34 @@ export const BusinessReportsView: React.FC = () => {
       s.payable_balance || 0,
     ]);
     exportCSV('Supplier_Payables_Factory_Dues', rows, headers);
+  };
+
+  const handleExportPriceAlerts = () => {
+    const headers = [
+      'Product Name',
+      'SKU',
+      'Previous Cost (Rs.)',
+      'Current Cost (Rs.)',
+      'Cost Change (%)',
+      'Selling Price (Rs.)',
+      'Gross Margin (%)',
+      'Pricing Mode',
+      'Auto Update',
+      'Last Cost Update',
+    ];
+    const rows = priceAlerts.map((p) => [
+      p.name,
+      p.sku,
+      p.previous_cost || p.purchase_price,
+      p.purchase_price,
+      p.cost_change_percent?.toFixed(2) || '0.00',
+      p.selling_price,
+      p.gross_margin_percent?.toFixed(2) || '0.00',
+      p.pricing_mode || 'FIXED',
+      p.auto_price_update ? 'YES' : 'NO',
+      p.last_cost_update || 'N/A',
+    ]);
+    exportCSV(`Price_Cost_Change_Alerts_Threshold_${alertThreshold}pct`, rows, headers);
   };
 
   return (
@@ -166,6 +218,27 @@ export const BusinessReportsView: React.FC = () => {
         >
           <Truck className="w-4 h-4" />
           <span>Supplier Payables</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            setActiveTab('price_alerts');
+            fetchPriceAlerts(alertThreshold);
+          }}
+          className={`pb-3 border-b-2 flex items-center space-x-1.5 transition-colors ${
+            activeTab === 'price_alerts'
+              ? 'border-amber-600 text-amber-700'
+              : 'border-transparent text-stone-500 hover:text-stone-800'
+          }`}
+        >
+          <TrendingUp className="w-4 h-4" />
+          <span>Cost Shift & Margin Alerts</span>
+          {priceAlerts.length > 0 && (
+            <span className="ml-1 px-1.5 py-0.2 bg-amber-100 text-amber-800 rounded-full text-[10px] font-bold">
+              {priceAlerts.length}
+            </span>
+          )}
         </button>
       </div>
 
@@ -462,6 +535,164 @@ export const BusinessReportsView: React.FC = () => {
                   </tbody>
                 </table>
               </div>
+            </div>
+          )}
+
+          {/* TAB 5: COST SHIFTS & MARGIN ALERTS */}
+          {activeTab === 'price_alerts' && (
+            <div className="bg-white rounded-xl border border-stone-200 shadow-xs overflow-hidden space-y-4">
+              <div className="p-4 bg-stone-50 border-b border-stone-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <h3 className="font-bold text-xs text-stone-800 flex items-center space-x-1.5">
+                    <span>Products with Significant Cost Shift (≥ {alertThreshold}%)</span>
+                    <span className="px-2 py-0.5 bg-amber-100 text-amber-900 rounded text-[10px] font-bold">
+                      {priceAlerts.length} Flagged
+                    </span>
+                  </h3>
+                  <span className="text-[11px] text-stone-500">
+                    Highlights products whose inward purchase cost shifted significantly vs previous batch, affecting gross margin.
+                  </span>
+                </div>
+
+                <div className="flex items-center space-x-3">
+                  <div className="flex items-center space-x-1 text-xs">
+                    <label className="text-stone-600 font-medium text-[11px]">Threshold:</label>
+                    <select
+                      value={alertThreshold}
+                      onChange={(e) => {
+                        const val = Number(e.target.value);
+                        setAlertThreshold(val);
+                        fetchPriceAlerts(val);
+                      }}
+                      className="p-1.5 border border-stone-300 rounded text-xs bg-white font-medium"
+                    >
+                      <option value="2.0">≥ 2% Shift</option>
+                      <option value="5.0">≥ 5% Shift</option>
+                      <option value="10.0">≥ 10% Shift</option>
+                      <option value="15.0">≥ 15% Shift</option>
+                    </select>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={handleExportPriceAlerts}
+                    disabled={priceAlerts.length === 0}
+                    className="inline-flex items-center space-x-1 px-3 py-1.5 bg-stone-200 hover:bg-stone-300 disabled:opacity-50 text-stone-800 rounded text-xs font-bold transition-colors"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Export CSV</span>
+                  </button>
+                </div>
+              </div>
+
+              {isLoadingAlerts ? (
+                <div className="py-12 text-center text-stone-400">
+                  <RefreshCw className="w-5 h-5 animate-spin mx-auto mb-1 text-amber-600" />
+                  Checking cost shift delta...
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="bg-stone-100 text-stone-600 font-bold uppercase border-b border-stone-200 text-[10px]">
+                        <th className="py-2.5 px-4">Product / SKU</th>
+                        <th className="py-2.5 px-4">Category</th>
+                        <th className="py-2.5 px-4 text-right">Previous Cost</th>
+                        <th className="py-2.5 px-4 text-right">Current Cost</th>
+                        <th className="py-2.5 px-4 text-center">Cost Shift</th>
+                        <th className="py-2.5 px-4 text-right">Selling Price</th>
+                        <th className="py-2.5 px-4 text-center">Gross Margin</th>
+                        <th className="py-2.5 px-4 text-center">Pricing Strategy</th>
+                        <th className="py-2.5 px-4">Last Cost Updated</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-stone-200">
+                      {priceAlerts.length === 0 ? (
+                        <tr>
+                          <td colSpan={9} className="py-8 text-center text-stone-400">
+                            No products currently exceed the ±{alertThreshold}% cost shift threshold.
+                          </td>
+                        </tr>
+                      ) : (
+                        priceAlerts.map((p) => {
+                          const isUp = (p.cost_change_percent || 0) > 0;
+                          const margin = p.gross_margin_percent ?? 0;
+                          const isMarginTight = margin < 10;
+
+                          return (
+                            <tr key={p.id} className="hover:bg-stone-50">
+                              <td className="py-2.5 px-4">
+                                <span className="font-bold text-stone-900 block">{p.name}</span>
+                                <span className="font-mono text-[10px] text-stone-500">SKU: {p.sku}</span>
+                              </td>
+                              <td className="py-2.5 px-4 text-stone-600">{p.category_name}</td>
+                              <td className="py-2.5 px-4 text-right font-mono text-stone-600">
+                                Rs. {Number(p.previous_cost || p.purchase_price).toLocaleString()}
+                              </td>
+                              <td className="py-2.5 px-4 text-right font-mono font-bold text-stone-900">
+                                Rs. {Number(p.purchase_price).toLocaleString()}
+                              </td>
+                              <td className="py-2.5 px-4 text-center">
+                                <span
+                                  className={`inline-flex items-center space-x-1 px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
+                                    isUp
+                                      ? 'bg-rose-100 text-rose-800'
+                                      : 'bg-emerald-100 text-emerald-800'
+                                  }`}
+                                >
+                                  {isUp ? (
+                                    <TrendingUp className="w-3 h-3" />
+                                  ) : (
+                                    <TrendingDown className="w-3 h-3" />
+                                  )}
+                                  <span>
+                                    {isUp ? '+' : ''}
+                                    {p.cost_change_percent?.toFixed(1)}%
+                                  </span>
+                                </span>
+                              </td>
+                              <td className="py-2.5 px-4 text-right font-mono font-bold text-amber-950">
+                                Rs. {Number(p.selling_price).toLocaleString()}
+                              </td>
+                              <td className="py-2.5 px-4 text-center">
+                                <span
+                                  className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
+                                    isMarginTight
+                                      ? 'bg-red-100 text-red-800'
+                                      : 'bg-stone-100 text-stone-800'
+                                  }`}
+                                >
+                                  {margin.toFixed(1)}%
+                                </span>
+                              </td>
+                              <td className="py-2.5 px-4 text-center">
+                                <div className="inline-flex items-center space-x-1">
+                                  <span className="px-1.5 py-0.5 bg-stone-100 text-stone-700 rounded text-[10px] font-semibold">
+                                    {p.pricing_mode || 'FIXED'}
+                                  </span>
+                                  {p.auto_price_update ? (
+                                    <span
+                                      title="Auto-Price enabled"
+                                      className="px-1 py-0.5 bg-amber-100 text-amber-800 rounded text-[9px] font-bold"
+                                    >
+                                      ⚡ Auto
+                                    </span>
+                                  ) : null}
+                                </div>
+                              </td>
+                              <td className="py-2.5 px-4 text-stone-500 font-mono text-[11px]">
+                                {p.last_cost_update
+                                  ? new Date(p.last_cost_update).toLocaleDateString()
+                                  : 'N/A'}
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           )}
         </div>

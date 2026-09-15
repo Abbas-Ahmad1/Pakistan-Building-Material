@@ -82,11 +82,18 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({ sale, onClose }) => 
     const phone = settings.phone || '+92 300 5936652';
     const email = settings.email || '';
     const footer = settings.invoice_footer || 'Thank you for your business! Goods once sold can be exchanged within 7 days with original invoice.';
-    const invoiceDate = new Date(sale.sale_date).toLocaleDateString('en-PK', {
+    const saleDateObj = new Date(sale.sale_date);
+    const invoiceDate = saleDateObj.toLocaleDateString('en-PK', {
       year: 'numeric',
       month: 'short',
       day: 'numeric',
     });
+    const invoiceTime = saleDateObj.toLocaleTimeString('en-PK', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+    });
+    const fullDateTime = `${invoiceDate} ${invoiceTime}`;
 
     // Generate crisp Base64 PNG data URLs so barcodes and QR codes are 100% visible in print/PDF
     const barcodeBase64A4 = generateBarcodeBase64Png(sale.invoice_number, 170, 40);
@@ -121,7 +128,17 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({ sale, onClose }) => 
   <style>
     @page {
       size: A4 portrait;
-      margin: 10mm;
+      margin: 10mm 10mm 15mm 10mm;
+      @bottom-right {
+        content: "Page " counter(page) " of " counter(pages);
+        font-size: 10px;
+        color: #4b5563;
+      }
+      @bottom-left {
+        content: "Printed: " "${fullDateTime}";
+        font-size: 9px;
+        color: #6b7280;
+      }
     }
     * {
       box-sizing: border-box;
@@ -261,7 +278,8 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({ sale, onClose }) => 
           SALES TAX INVOICE
         </div>
         <div style="font-size: 15px; font-weight: bold;">${sale.invoice_number}</div>
-        <div style="color: #4b5563;">Date: ${invoiceDate}</div>
+        <div style="color: #4b5563; font-size: 11px;">Date: <strong>${invoiceDate}</strong></div>
+        <div style="color: #4b5563; font-size: 11px;">Time: <strong>${invoiceTime}</strong></div>
       </td>
     </tr>
   </table>
@@ -378,7 +396,8 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({ sale, onClose }) => 
 
   <div class="footer">
     ${footer}<br>
-    Store Helpline: ${phone}
+    Store Helpline: ${phone} • Generated on ${fullDateTime}
+    <div style="font-size: 9.5px; color: #6b7280; margin-top: 4px;">Page 1 of 1 • Official Business Copy</div>
   </div>
 </body>
 </html>`;
@@ -462,8 +481,9 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({ sale, onClose }) => 
 
   <table>
     <tr><td>Inv #: <span class="bold">${sale.invoice_number}</span></td><td class="right">${invoiceDate}</td></tr>
+    <tr><td>Time: <span class="bold">${invoiceTime}</span></td><td class="right">${sale.payment_method}</td></tr>
     <tr><td>Cust: <span class="bold">${sale.customer_name || 'Walk-in'}</span></td><td class="right">${sale.customer_phone || ''}</td></tr>
-    <tr><td>Cashier: ${sale.cashier_name || 'Imtiaz Ali'}</td><td class="right">${sale.payment_method}</td></tr>
+    <tr><td>Cashier: ${sale.cashier_name || 'Imtiaz Ali'}</td><td class="right">${sale.branch_name || 'Main Store'}</td></tr>
   </table>
 
   <div class="divider"></div>
@@ -514,6 +534,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({ sale, onClose }) => 
 
   <div class="center" style="font-size: 9.5px;">
     ${footer}<br>
+    Printed: ${fullDateTime}<br>
     *** THANK YOU ***
   </div>
 </body>

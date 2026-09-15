@@ -39,31 +39,20 @@ class AuthController
         $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if (!$user) {
-            Response::error('Invalid credentials.', 401);
+            Response::error('Username or password is incorrect. Please try again.', 401);
             return;
         }
 
         if ($user['status'] !== 'active') {
-            Response::error('Your account is deactivated. Please contact the administrator.', 403);
+            Response::error('Your account is inactive. Please contact the administrator.', 403);
             return;
         }
 
-        // Verify password using native bcrypt verify
+        // Verify password using native bcrypt verify ONLY
         $passwordValid = password_verify($password, $user['password_hash']);
 
-        // Fallback for default seed accounts if re-hashed
         if (!$passwordValid) {
-            if (($user['username'] === 'admin' && $password === 'admin123') ||
-                ($user['username'] === 'cashier' && $password === 'cashier123')) {
-                $passwordValid = true;
-                // Auto-upgrade password hash to standard current bcrypt
-                $newHash = password_hash($password, PASSWORD_BCRYPT);
-                $pdo->prepare("UPDATE users SET password_hash = ? WHERE id = ?")->execute([$newHash, $user['id']]);
-            }
-        }
-
-        if (!$passwordValid) {
-            Response::error('Invalid credentials.', 401);
+            Response::error('Username or password is incorrect. Please try again.', 401);
             return;
         }
 
@@ -100,7 +89,7 @@ class AuthController
                 'branch_name' => $branch['name'],
                 'branch_code' => $branch['code'],
             ],
-        ], 'Login successful');
+        ], 'Login successful. Welcome back!');
     }
 
     /**

@@ -266,7 +266,8 @@ class CashDrawerController
             ], 'Petty cash expense recorded successfully', 201);
         } catch (\Throwable $e) {
             Database::rollBack();
-            Response::error('Failed to record drawer expense: ' . $e->getMessage(), 500);
+            error_log("Failed to record drawer expense: " . $e->getMessage());
+            Response::error('Unable to record drawer expense. Please try again.', 400);
         }
     }
 
@@ -381,7 +382,8 @@ class CashDrawerController
             ], "Shift {$shift['shift_code']} closed successfully. Z-Report generated!");
         } catch (\Throwable $e) {
             Database::rollBack();
-            Response::error('Failed to close cash drawer: ' . $e->getMessage(), 500);
+            error_log("Failed to close cash drawer: " . $e->getMessage());
+            Response::error('Unable to close cash drawer. Please check values and try again.', 400);
         }
     }
 

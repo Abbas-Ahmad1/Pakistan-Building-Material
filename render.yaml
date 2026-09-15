@@ -1,3 +1,6 @@
+# [LEGACY CONFIGURATION - Node.js Deployment]
+# Note: The active production architecture is PHP 8.2+ REST API + MySQL 8+ on cPanel/Apache.
+# See DEPLOYMENT_CPANEL.md for the official deployment guide.
 services:
   - type: web
     name: pakistan-hardware-store

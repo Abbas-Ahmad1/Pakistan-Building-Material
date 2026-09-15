@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../db/database.js';
 import { verifySession } from './auth.js';
+import { InventoryBatchHelper } from '../utils/inventoryBatch.js';
 
 export const branchesRouter = Router();
 
@@ -476,6 +477,16 @@ branchesRouter.post('/transfers', (req: Request, res: Response): any => {
           `Stock transfer received from ${fromBranch.name} (${transferNumber})`,
           session.userId,
           toBranchId
+        );
+
+        // Move inventory batch layers preserving exact unit costs
+        InventoryBatchHelper.transferStockBetweenBranches(
+          prodId,
+          fromBranchId,
+          toBranchId,
+          qty,
+          transferId,
+          transferNumber
         );
       }
 

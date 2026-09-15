@@ -37,6 +37,14 @@ productsRouter.get('/', (req: Request, res: Response): any => {
         p.description,
         p.unit,
         ${isAdmin ? 'p.purchase_price,' : '0 as purchase_price,'}
+        p.previous_cost,
+        p.cost_change_percent,
+        p.pricing_mode,
+        p.markup_percentage,
+        p.margin_percentage,
+        p.auto_price_update,
+        p.last_cost_update,
+        p.weighted_avg_cost,
         p.selling_price,
         p.wholesale_price,
         p.current_stock,
@@ -212,6 +220,190 @@ productsRouter.get('/:id', (req: Request, res: Response): any => {
   }
 });
 
+// GET /api/products/:id/price-history - audit log of cost and selling price changes
+productsRouter.get('/:id/price-history', (req: Request, res: Response): any => {
+  try {
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : undefined;
+    const session = verifySession(token);
+    const isAdmin = session?.role === 'ADMIN';
+
+    if (!isAdmin) {
+      return res.status(403).json({ success: false, message: 'Admin access required to view price history.' });
+    }
+
+    const id = Number(req.params.id);
+    const history = db
+      .prepare(`
+        SELECT 
+          pph.*,
+          u.name as user_name,
+          p.name as product_name,
+          p.sku as product_sku,
+          b.name as branch_name,
+          po.purchase_number
+        FROM product_price_history pph
+        LEFT JOIN users u ON pph.user_id = u.id
+        LEFT JOIN products p ON pph.product_id = p.id
+        LEFT JOIN branches b ON pph.branch_id = b.id
+        LEFT JOIN purchases po ON pph.purchase_id = po.id
+        WHERE pph.product_id = ?
+        ORDER BY pph.created_at DESC, pph.id DESC
+      `)
+      .all(id);
+
+    return res.json({ success: true, data: history });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: 'Failed to retrieve price history.' });
+  }
+});
+
+// GET /api/products/:id/batches - list of inventory stock batches with remaining quantities and costs
+productsRouter.get('/:id/batches', (req: Request, res: Response): any => {
+  try {
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : undefined;
+    const session = verifySession(token);
+    const isAdmin = session?.role === 'ADMIN';
+
+    if (!isAdmin) {
+      return res.status(403).json({ success: false, message: 'Admin access required to view inventory batches.' });
+    }
+
+    const id = Number(req.params.id);
+    const batches = db
+      .prepare(`
+        SELECT 
+          ib.*,
+          b.name as branch_name,
+          s.name as supplier_name,
+          s.company as supplier_company,
+          po.purchase_number
+        FROM inventory_batches ib
+        LEFT JOIN branches b ON ib.branch_id = b.id
+        LEFT JOIN suppliers s ON ib.supplier_id = s.id
+        LEFT JOIN purchases po ON ib.purchase_id = po.id
+        WHERE ib.product_id = ?
+        ORDER BY ib.remaining_quantity > 0 DESC, ib.received_date ASC, ib.id ASC
+      `)
+      .all(id);
+
+    return res.json({ success: true, data: batches });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: 'Failed to retrieve batches.' });
+  }
+});
+
+// POST /api/products/bulk-price-update - update catalog selling prices dynamically
+productsRouter.post('/bulk-price-update', (req: Request, res: Response): any => {
+  try {
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : undefined;
+    const session = verifySession(token);
+
+    if (!session || session.role !== 'ADMIN') {
+      return res.status(403).json({ success: false, message: 'Admin privileges required for bulk price updates.' });
+    }
+
+    const {
+      product_ids,
+      category_id,
+      supplier_id,
+      action_type = 'RECALCULATE_FROM_COST',
+      adjustment_value = 0,
+      round_to = 0,
+      reason = 'Bulk Price Adjustment',
+    } = req.body;
+
+    let targetProducts: any[] = [];
+
+    if (Array.isArray(product_ids) && product_ids.length > 0) {
+      const placeholders = product_ids.map(() => '?').join(',');
+      targetProducts = db
+        .prepare(`SELECT * FROM products WHERE id IN (${placeholders}) AND status = 'active'`)
+        .all(...product_ids) as any[];
+    } else if (category_id) {
+      targetProducts = db
+        .prepare(`SELECT * FROM products WHERE category_id = ? AND status = 'active'`)
+        .all(category_id) as any[];
+    } else if (supplier_id) {
+      targetProducts = db
+        .prepare(`SELECT * FROM products WHERE supplier_id = ? AND status = 'active'`)
+        .all(supplier_id) as any[];
+    } else {
+      targetProducts = db
+        .prepare(`SELECT * FROM products WHERE status = 'active'`)
+        .all() as any[];
+    }
+
+    if (targetProducts.length === 0) {
+      return res.status(404).json({ success: false, message: 'No matching active products found for price update.' });
+    }
+
+    db.exec('BEGIN');
+    const updateStmt = db.prepare(`UPDATE products SET selling_price = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`);
+    const historyStmt = db.prepare(`
+      INSERT INTO product_price_history (
+        product_id, branch_id, old_cost, new_cost, cost_change_percent,
+        old_selling_price, new_selling_price, price_change_percent,
+        pricing_mode, reason, user_id
+      ) VALUES (?, 1, ?, ?, 0, ?, ?, ?, ?, ?, ?)
+    `);
+
+    let updatedCount = 0;
+
+    for (const p of targetProducts) {
+      const oldPrice = Number(p.selling_price) || 0;
+      const cost = Number(p.purchase_price) || 0;
+      let newPrice = oldPrice;
+
+      if (action_type === 'RECALCULATE_FROM_COST') {
+        const mode = p.pricing_mode || 'FIXED';
+        const markup = Number(p.markup_percentage) || 0;
+        const margin = Number(p.margin_percentage) || 0;
+
+        if (mode === 'MARKUP' && markup > 0) {
+          newPrice = Math.round(cost * (1 + (markup / 100)) * 100) / 100;
+        } else if (mode === 'MARGIN' && margin > 0 && margin < 100) {
+          newPrice = Math.round((cost / (1 - (margin / 100))) * 100) / 100;
+        }
+      } else if (action_type === 'PERCENTAGE_INCREASE') {
+        newPrice = Math.round(oldPrice * (1 + (adjustment_value / 100)) * 100) / 100;
+      } else if (action_type === 'PERCENTAGE_DECREASE') {
+        newPrice = Math.round(oldPrice * (1 - (adjustment_value / 100)) * 100) / 100;
+      } else if (action_type === 'FIXED_AMOUNT_ADD') {
+        newPrice = Math.round((oldPrice + adjustment_value) * 100) / 100;
+      }
+
+      if (round_to > 0) {
+        newPrice = Math.round(newPrice / round_to) * round_to;
+      }
+
+      if (newPrice > 0 && Math.abs(newPrice - oldPrice) > 0.001) {
+        const changePercent = oldPrice > 0 ? Math.round(((newPrice - oldPrice) / oldPrice) * 10000) / 100 : 0;
+        updateStmt.run(newPrice, p.id);
+        historyStmt.run(
+          p.id, cost, cost, oldPrice, newPrice, changePercent,
+          p.pricing_mode || 'FIXED', `${reason} (${action_type})`, session.userId
+        );
+        updatedCount++;
+      }
+    }
+
+    db.exec('COMMIT');
+
+    return res.json({
+      success: true,
+      message: `Bulk price update completed. ${updatedCount} products adjusted.`,
+      updated_count: updatedCount,
+      total_considered: targetProducts.length,
+    });
+  } catch (error: any) {
+    db.exec('ROLLBACK');
+    return res.status(500).json({ success: false, message: error.message || 'Failed to complete bulk price update.' });
+  }
+});
+
 // POST /api/products - create product (ADMIN only)
 productsRouter.post('/', (req: Request, res: Response): any => {
   try {
@@ -240,6 +432,10 @@ productsRouter.post('/', (req: Request, res: Response): any => {
       supplier_id,
       image_url,
       status = 'active',
+      pricing_mode = 'FIXED',
+      markup_percentage = 0,
+      margin_percentage = 0,
+      auto_price_update = 0,
     } = req.body;
 
     // Validations
@@ -265,7 +461,20 @@ productsRouter.post('/', (req: Request, res: Response): any => {
     }
 
     const pPrice = Number(purchase_price) || 0;
-    const sPrice = Number(selling_price) || 0;
+    let sPrice = Number(selling_price) || 0;
+    const markup = Number(markup_percentage) || 0;
+    const margin = Number(margin_percentage) || 0;
+    const autoUpdate = auto_price_update ? 1 : 0;
+
+    // Auto calculate initial selling price if configured
+    if (autoUpdate) {
+      if (pricing_mode === 'MARKUP' && markup > 0) {
+        sPrice = Math.round(pPrice * (1 + (markup / 100)) * 100) / 100;
+      } else if (pricing_mode === 'MARGIN' && margin > 0 && margin < 100) {
+        sPrice = Math.round((pPrice / (1 - (margin / 100))) * 100) / 100;
+      }
+    }
+
     const wPrice = Number(wholesale_price) || sPrice;
     const stock = Number(current_stock) || 0;
     const minStock = Number(minimum_stock) || 5;
@@ -273,9 +482,10 @@ productsRouter.post('/', (req: Request, res: Response): any => {
     const insert = db.prepare(`
       INSERT INTO products (
         sku, barcode, name, category_id, subcategory_id, brand, description,
-        unit, purchase_price, selling_price, wholesale_price,
-        current_stock, minimum_stock, supplier_id, image_url, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        unit, purchase_price, previous_cost, cost_change_percent, weighted_avg_cost,
+        selling_price, wholesale_price, pricing_mode, markup_percentage, margin_percentage, auto_price_update,
+        current_stock, minimum_stock, supplier_id, image_url, status, last_cost_update
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
     `);
 
     const info = insert.run(
@@ -288,8 +498,14 @@ productsRouter.post('/', (req: Request, res: Response): any => {
       description?.trim() || null,
       unit.trim(),
       pPrice,
+      pPrice,
+      pPrice,
       sPrice,
       wPrice,
+      pricing_mode,
+      markup,
+      margin,
+      autoUpdate,
       stock,
       minStock,
       supplier_id ? Number(supplier_id) : null,
@@ -299,8 +515,24 @@ productsRouter.post('/', (req: Request, res: Response): any => {
 
     const productId = Number(info.lastInsertRowid);
 
-    // If initial stock is greater than 0, record OPENING_STOCK inventory transaction
+    // Initial price history record
+    db.prepare(`
+      INSERT INTO product_price_history (
+        product_id, branch_id, old_cost, new_cost, cost_change_percent,
+        old_selling_price, new_selling_price, price_change_percent,
+        pricing_mode, reason, user_id
+      ) VALUES (?, 1, 0, ?, 0, 0, ?, 0, ?, 'Initial product setup', ?)
+    `).run(productId, pPrice, sPrice, pricing_mode, session.userId);
+
+    // If initial stock is greater than 0, create opening batch and transaction
     if (stock > 0) {
+      const batchNum = `BATCH-INIT-1-${productId}`;
+      db.prepare(`
+        INSERT INTO inventory_batches (
+          product_id, branch_id, supplier_id, batch_number, unit_cost, initial_quantity, remaining_quantity, notes
+        ) VALUES (?, 1, ?, ?, ?, ?, ?, 'Opening stock batch')
+      `).run(productId, supplier_id ? Number(supplier_id) : null, batchNum, pPrice, stock, stock);
+
       db.prepare(`
         INSERT INTO inventory_transactions (
           product_id, transaction_type, reference_type, reference_id,
@@ -313,12 +545,12 @@ productsRouter.post('/', (req: Request, res: Response): any => {
     db.prepare(`
       INSERT INTO audit_logs (user_id, action, module, record_id, details)
       VALUES (?, 'CREATE_PRODUCT', 'Products', ?, ?)
-    `).run(session.userId, productId, `Added product: ${name} (SKU: ${sku}, Stock: ${stock} ${unit})`);
+    `).run(session.userId, productId, `Added product: ${name} (SKU: ${sku}, Stock: ${stock} ${unit}, Price: Rs. ${sPrice})`);
 
     return res.status(201).json({
       success: true,
       message: 'Product created successfully.',
-      data: { id: productId, name, sku, current_stock: stock },
+      data: { id: productId, name, sku, current_stock: stock, selling_price: sPrice },
     });
   } catch (error: any) {
     console.error('Error creating product:', error);
@@ -359,6 +591,10 @@ productsRouter.put('/:id', (req: Request, res: Response): any => {
       supplier_id,
       image_url,
       status,
+      pricing_mode,
+      markup_percentage,
+      margin_percentage,
+      auto_price_update,
     } = req.body;
 
     if (!name || !sku || !category_id || !unit) {
@@ -379,6 +615,30 @@ productsRouter.put('/:id', (req: Request, res: Response): any => {
       }
     }
 
+    const oldCost = Number(existing.purchase_price) || 0;
+    const newCost = purchase_price !== undefined ? Number(purchase_price) : oldCost;
+    const oldPrice = Number(existing.selling_price) || 0;
+    let newPrice = selling_price !== undefined ? Number(selling_price) : oldPrice;
+
+    const finalPricingMode = pricing_mode || existing.pricing_mode || 'FIXED';
+    const finalMarkup = markup_percentage !== undefined ? Number(markup_percentage) : (Number(existing.markup_percentage) || 0);
+    const finalMargin = margin_percentage !== undefined ? Number(margin_percentage) : (Number(existing.margin_percentage) || 0);
+    const finalAutoUpdate = auto_price_update !== undefined ? (auto_price_update ? 1 : 0) : (existing.auto_price_update || 0);
+
+    // If auto price update is toggled or enabled and cost changed
+    if (finalAutoUpdate && selling_price === undefined) {
+      if (finalPricingMode === 'MARKUP' && finalMarkup > 0) {
+        newPrice = Math.round(newCost * (1 + (finalMarkup / 100)) * 100) / 100;
+      } else if (finalPricingMode === 'MARGIN' && finalMargin > 0 && finalMargin < 100) {
+        newPrice = Math.round((newCost / (1 - (finalMargin / 100))) * 100) / 100;
+      }
+    }
+
+    const costDiff = Math.abs(newCost - oldCost);
+    const priceDiff = Math.abs(newPrice - oldPrice);
+    const costChangePct = oldCost > 0 ? Math.round(((newCost - oldCost) / oldCost) * 10000) / 100 : 0;
+    const priceChangePct = oldPrice > 0 ? Math.round(((newPrice - oldPrice) / oldPrice) * 10000) / 100 : 0;
+
     db.prepare(`
       UPDATE products
       SET
@@ -391,12 +651,19 @@ productsRouter.put('/:id', (req: Request, res: Response): any => {
         description = ?,
         unit = ?,
         purchase_price = ?,
+        previous_cost = ?,
+        cost_change_percent = ?,
         selling_price = ?,
         wholesale_price = ?,
         minimum_stock = ?,
         supplier_id = ?,
         image_url = ?,
         status = ?,
+        pricing_mode = ?,
+        markup_percentage = ?,
+        margin_percentage = ?,
+        auto_price_update = ?,
+        last_cost_update = ?,
         updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `).run(
@@ -408,21 +675,52 @@ productsRouter.put('/:id', (req: Request, res: Response): any => {
       brand?.trim() || null,
       description?.trim() || null,
       unit.trim(),
-      Number(purchase_price) || 0,
-      Number(selling_price) || 0,
+      newCost,
+      costDiff > 0.001 ? oldCost : (existing.previous_cost || oldCost),
+      costDiff > 0.001 ? costChangePct : (existing.cost_change_percent || 0),
+      newPrice,
       Number(wholesale_price) || 0,
       Number(minimum_stock) || 5,
       supplier_id ? Number(supplier_id) : null,
       image_url?.trim() || null,
       status || existing.status,
+      finalPricingMode,
+      finalMarkup,
+      finalMargin,
+      finalAutoUpdate,
+      costDiff > 0.001 ? new Date().toISOString() : existing.last_cost_update,
       id
     );
+
+    // If cost or selling price was modified, record in price history
+    if (costDiff > 0.001 || priceDiff > 0.001) {
+      let reason = 'Manual product update';
+      if (priceDiff > 0.001 && costDiff <= 0.001) {
+        reason = `Selling price adjusted from Rs. ${oldPrice.toFixed(2)} to Rs. ${newPrice.toFixed(2)}`;
+      } else if (costDiff > 0.001 && priceDiff <= 0.001) {
+        reason = `Purchase cost adjusted from Rs. ${oldCost.toFixed(2)} to Rs. ${newCost.toFixed(2)}`;
+      } else {
+        reason = `Price & cost adjusted (Cost: Rs. ${newCost.toFixed(2)}, Price: Rs. ${newPrice.toFixed(2)})`;
+      }
+
+      db.prepare(`
+        INSERT INTO product_price_history (
+          product_id, branch_id, old_cost, new_cost, cost_change_percent,
+          old_selling_price, new_selling_price, price_change_percent,
+          pricing_mode, reason, user_id
+        ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        id, oldCost, newCost, costChangePct,
+        oldPrice, newPrice, priceChangePct,
+        finalPricingMode, reason, session.userId
+      );
+    }
 
     // Audit log
     db.prepare(`
       INSERT INTO audit_logs (user_id, action, module, record_id, details)
       VALUES (?, 'UPDATE_PRODUCT', 'Products', ?, ?)
-    `).run(session.userId, id, `Updated product: ${name} (SKU: ${sku})`);
+    `).run(session.userId, id, `Updated product: ${name} (SKU: ${sku}, Price: Rs. ${newPrice})`);
 
     return res.json({ success: true, message: 'Product updated successfully.' });
   } catch (error: any) {

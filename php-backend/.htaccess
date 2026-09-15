@@ -11,6 +11,9 @@
 
     # Block direct access to sensitive configuration files and directories
     RewriteRule ^config/.*$ - [F,L]
+    RewriteRule ^core/.*$ - [F,L]
+    RewriteRule ^controllers/.*$ - [F,L]
+    RewriteRule ^migrations/.*$ - [F,L]
     RewriteRule ^\.env.*$ - [F,L]
     RewriteRule ^database\.sql$ - [F,L]
     RewriteRule ^seed\.sql$ - [F,L]

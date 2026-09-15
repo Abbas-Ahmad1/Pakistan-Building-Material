@@ -67,6 +67,10 @@ export const ProductFormModal: React.FC<ProductFormModalProps> = ({
     supplier_id: '' as string | number,
     image_url: '',
     status: 'active' as 'active' | 'inactive',
+    pricing_mode: 'FIXED' as 'FIXED' | 'MARKUP' | 'MARGIN',
+    markup_percentage: '',
+    margin_percentage: '',
+    auto_price_update: false,
   });
 
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -91,6 +95,10 @@ export const ProductFormModal: React.FC<ProductFormModalProps> = ({
         supplier_id: productToEdit.supplier_id || '',
         image_url: productToEdit.image_url || '',
         status: (productToEdit.status as 'active' | 'inactive') || 'active',
+        pricing_mode: productToEdit.pricing_mode || 'FIXED',
+        markup_percentage: productToEdit.markup_percentage ? productToEdit.markup_percentage.toString() : '',
+        margin_percentage: productToEdit.margin_percentage ? productToEdit.margin_percentage.toString() : '',
+        auto_price_update: Boolean(productToEdit.auto_price_update),
       });
     } else {
       setFormData({
@@ -110,6 +118,10 @@ export const ProductFormModal: React.FC<ProductFormModalProps> = ({
         supplier_id: suppliers.length > 0 ? suppliers[0].id : '',
         image_url: '',
         status: 'active',
+        pricing_mode: 'FIXED',
+        markup_percentage: '20',
+        margin_percentage: '15',
+        auto_price_update: false,
       });
     }
     setError(null);
@@ -136,6 +148,33 @@ export const ProductFormModal: React.FC<ProductFormModalProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+
+    const cost = Number(formData.purchase_price) || 0;
+    const selling = Number(formData.selling_price) || 0;
+    const wholesale = Number(formData.wholesale_price) || selling;
+    const margin = formData.margin_percentage ? Number(formData.margin_percentage) : 0;
+    const markup = formData.markup_percentage ? Number(formData.markup_percentage) : 0;
+
+    if (cost < 0 || selling < 0 || wholesale < 0) {
+      setError('Prices cannot be negative.');
+      return;
+    }
+
+    if (formData.pricing_mode === 'MARGIN' && margin >= 100) {
+      setError('Target margin percentage must be strictly less than 100%.');
+      return;
+    }
+
+    if (formData.pricing_mode === 'MARKUP' && markup < 0) {
+      setError('Markup percentage cannot be negative.');
+      return;
+    }
+
+    if (formData.pricing_mode === 'MARGIN' && margin < 0) {
+      setError('Margin percentage cannot be negative.');
+      return;
+    }
+
     setIsSubmitting(true);
 
     const payload = {
@@ -143,11 +182,15 @@ export const ProductFormModal: React.FC<ProductFormModalProps> = ({
       category_id: Number(formData.category_id),
       subcategory_id: formData.subcategory_id ? Number(formData.subcategory_id) : null,
       supplier_id: formData.supplier_id ? Number(formData.supplier_id) : null,
-      purchase_price: Number(formData.purchase_price) || 0,
-      selling_price: Number(formData.selling_price) || 0,
-      wholesale_price: Number(formData.wholesale_price) || Number(formData.selling_price) || 0,
+      purchase_price: cost,
+      selling_price: selling,
+      wholesale_price: wholesale,
       current_stock: Number(formData.current_stock) || 0,
       minimum_stock: Number(formData.minimum_stock) || 5,
+      pricing_mode: formData.pricing_mode,
+      markup_percentage: formData.markup_percentage ? Number(formData.markup_percentage) : null,
+      margin_percentage: formData.margin_percentage ? Number(formData.margin_percentage) : null,
+      auto_price_update: Boolean(formData.auto_price_update),
     };
 
     const endpoint = isEditing ? `/api/products/${productToEdit?.id}` : '/api/products';
@@ -400,9 +443,155 @@ export const ProductFormModal: React.FC<ProductFormModalProps> = ({
 
           {/* Pricing & Stock Section */}
           <div className="space-y-3 pt-3 border-t border-stone-200">
-            <h3 className="text-xs font-bold uppercase tracking-wider text-stone-600 flex items-center space-x-1.5">
-              <span>2. Pricing Tiers & Stock Thresholds</span>
-            </h3>
+            <div className="flex items-center justify-between">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-stone-600 flex items-center space-x-1.5">
+                <span>2. Dynamic Pricing Strategy & Stock Thresholds</span>
+              </h3>
+              {isEditing && productToEdit?.previous_cost && productToEdit.previous_cost > 0 && (
+                <span className="text-[10px] text-stone-500 font-mono">
+                  Prev Cost: {settings.currency} {productToEdit.previous_cost}
+                  {productToEdit.cost_change_percent !== undefined && productToEdit.cost_change_percent !== 0 && (
+                    <span
+                      className={`ml-1 font-bold ${
+                        productToEdit.cost_change_percent > 0 ? 'text-red-600' : 'text-emerald-600'
+                      }`}
+                    >
+                      ({productToEdit.cost_change_percent > 0 ? '+' : ''}
+                      {productToEdit.cost_change_percent}%)
+                    </span>
+                  )}
+                </span>
+              )}
+            </div>
+
+            {/* Pricing Mode & Dynamic Formula Bar */}
+            <div className="bg-stone-50 p-3 rounded-xl border border-stone-200 space-y-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-stone-700 mb-1">
+                    Pricing Mode
+                  </label>
+                  <select
+                    value={formData.pricing_mode}
+                    onChange={(e) => {
+                      const newMode = e.target.value as 'FIXED' | 'MARKUP' | 'MARGIN';
+                      setFormData((prev) => {
+                        const cost = Number(prev.purchase_price) || 0;
+                        let newSelling = prev.selling_price;
+                        if (newMode === 'MARKUP' && cost > 0 && prev.markup_percentage) {
+                          newSelling = (cost * (1 + Number(prev.markup_percentage) / 100)).toFixed(2);
+                        } else if (newMode === 'MARGIN' && cost > 0 && prev.margin_percentage) {
+                          const margin = Number(prev.margin_percentage);
+                          if (margin < 100) {
+                            newSelling = (cost / (1 - margin / 100)).toFixed(2);
+                          }
+                        }
+                        return { ...prev, pricing_mode: newMode, selling_price: newSelling };
+                      });
+                    }}
+                    className="w-full px-3 py-2 border border-stone-300 rounded-lg text-xs font-semibold focus:ring-2 focus:ring-amber-600 focus:outline-none bg-white"
+                  >
+                    <option value="FIXED">Manual / Fixed Price</option>
+                    <option value="MARKUP">Cost + Markup Percentage (%)</option>
+                    <option value="MARGIN">Cost + Target Margin (%)</option>
+                  </select>
+                </div>
+
+                {formData.pricing_mode === 'MARKUP' && (
+                  <div>
+                    <label className="block text-xs font-semibold text-stone-700 mb-1">
+                      Markup Percentage (%)
+                    </label>
+                    <div className="relative">
+                      <input
+                        type="number"
+                        step="any"
+                        min="0"
+                        value={formData.markup_percentage}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setFormData((prev) => {
+                            const cost = Number(prev.purchase_price) || 0;
+                            const newSelling = cost > 0 ? (cost * (1 + (Number(val) || 0) / 100)).toFixed(2) : prev.selling_price;
+                            return { ...prev, markup_percentage: val, selling_price: newSelling };
+                          });
+                        }}
+                        placeholder="e.g. 20"
+                        className="w-full px-3 py-2 border border-stone-300 rounded-lg text-xs font-mono font-bold focus:ring-2 focus:ring-amber-600 focus:outline-none"
+                      />
+                      <span className="absolute right-3 top-2 text-xs font-bold text-stone-400">%</span>
+                    </div>
+                  </div>
+                )}
+
+                {formData.pricing_mode === 'MARGIN' && (
+                  <div>
+                    <label className="block text-xs font-semibold text-stone-700 mb-1">
+                      Target Gross Margin (%)
+                    </label>
+                    <div className="relative">
+                      <input
+                        type="number"
+                        step="any"
+                        min="0"
+                        max="99.9"
+                        value={formData.margin_percentage}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setFormData((prev) => {
+                            const cost = Number(prev.purchase_price) || 0;
+                            const margin = Number(val) || 0;
+                            const newSelling = cost > 0 && margin < 100 ? (cost / (1 - margin / 100)).toFixed(2) : prev.selling_price;
+                            return { ...prev, margin_percentage: val, selling_price: newSelling };
+                          });
+                        }}
+                        placeholder="e.g. 15"
+                        className="w-full px-3 py-2 border border-stone-300 rounded-lg text-xs font-mono font-bold focus:ring-2 focus:ring-amber-600 focus:outline-none"
+                      />
+                      <span className="absolute right-3 top-2 text-xs font-bold text-stone-400">%</span>
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex items-center pt-5">
+                  <label className="flex items-center space-x-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={formData.auto_price_update}
+                      onChange={(e) => setFormData({ ...formData, auto_price_update: e.target.checked })}
+                      className="rounded border-stone-300 text-amber-800 focus:ring-amber-600 w-4 h-4"
+                    />
+                    <span className="text-xs font-semibold text-stone-800">
+                      Auto-update price on purchase inward
+                    </span>
+                  </label>
+                </div>
+              </div>
+
+              {/* Profit & Margin Live Indicator */}
+              {Number(formData.purchase_price) > 0 && Number(formData.selling_price) > 0 && (
+                <div className="flex items-center justify-between text-[11px] pt-2 border-t border-stone-200">
+                  <span className="text-stone-600">
+                    Gross Profit:{' '}
+                    <strong className="text-stone-900 font-mono">
+                      {settings.currency}{' '}
+                      {(Number(formData.selling_price) - Number(formData.purchase_price)).toFixed(2)}
+                    </strong>
+                  </span>
+                  <span className="text-stone-600">
+                    Gross Margin:{' '}
+                    <strong className="text-emerald-700 font-mono">
+                      {(
+                        ((Number(formData.selling_price) - Number(formData.purchase_price)) /
+                          Number(formData.selling_price)) *
+                        100
+                      ).toFixed(1)}
+                      %
+                    </strong>
+                  </span>
+                </div>
+              )}
+            </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div>
@@ -419,7 +608,22 @@ export const ProductFormModal: React.FC<ProductFormModalProps> = ({
                     required
                     min="0"
                     value={formData.purchase_price}
-                    onChange={(e) => setFormData({ ...formData, purchase_price: e.target.value })}
+                    onChange={(e) => {
+                      const costVal = e.target.value;
+                      setFormData((prev) => {
+                        const cost = Number(costVal) || 0;
+                        let newSelling = prev.selling_price;
+                        if (prev.pricing_mode === 'MARKUP' && cost > 0 && prev.markup_percentage) {
+                          newSelling = (cost * (1 + Number(prev.markup_percentage) / 100)).toFixed(2);
+                        } else if (prev.pricing_mode === 'MARGIN' && cost > 0 && prev.margin_percentage) {
+                          const margin = Number(prev.margin_percentage);
+                          if (margin < 100) {
+                            newSelling = (cost / (1 - margin / 100)).toFixed(2);
+                          }
+                        }
+                        return { ...prev, purchase_price: costVal, selling_price: newSelling };
+                      });
+                    }}
                     placeholder="0.00"
                     className="w-full pl-8 pr-3 py-2 border border-stone-300 rounded-lg text-xs font-mono focus:ring-2 focus:ring-amber-600 focus:outline-none"
                   />

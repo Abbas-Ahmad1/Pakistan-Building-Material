@@ -95,7 +95,8 @@ class ReportsController
      */
     public function bestsellers(Request $request, array $params = []): void
     {
-        Auth::requireAuth($request);
+        $session = Auth::requireAuth($request);
+        Auth::requireAdmin($session);
 
         $limit = (int)($request->query('limit', 10));
         $dateFrom = $request->query('date_from', date('Y-m-01'));
@@ -258,5 +259,61 @@ class ReportsController
             'total_tied_capital' => $totalTiedCapital,
             'items'              => $deadStock,
         ]);
+    }
+
+    /**
+     * GET /api/reports/price-change-alerts
+     * Highlights products with significant cost changes, margin compressions, or pending price reviews
+     */
+    public function priceChangeAlerts(Request $request, array $params = []): void
+    {
+        $session = Auth::requireAuth($request);
+        Auth::requireAdmin($session);
+
+        $threshold = (float)($request->query('threshold', 5.0));
+        $pdo = Database::getConnection();
+
+        $stmt = $pdo->prepare("
+            SELECT 
+                p.id,
+                p.name,
+                p.sku,
+                p.unit,
+                c.name as category_name,
+                p.purchase_price as current_cost,
+                p.previous_cost,
+                p.cost_change_percent,
+                p.selling_price,
+                p.pricing_mode,
+                p.markup_percentage,
+                p.margin_percentage,
+                p.auto_price_update,
+                p.last_cost_update,
+                CASE 
+                    WHEN p.selling_price > 0 THEN ROUND(((p.selling_price - p.purchase_price) / p.selling_price) * 100, 2)
+                    ELSE 0.00
+                END as current_margin_percent,
+                p.current_stock
+            FROM products p
+            LEFT JOIN categories c ON p.category_id = c.id
+            WHERE p.status = 'active'
+              AND (ABS(p.cost_change_percent) >= :threshold OR (p.previous_cost > 0 AND p.purchase_price != p.previous_cost))
+            ORDER BY ABS(p.cost_change_percent) DESC, p.last_cost_update DESC
+        ");
+        $stmt->execute([':threshold' => $threshold]);
+        $alerts = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        foreach ($alerts as &$a) {
+            $a['id'] = (int)$a['id'];
+            $a['current_cost'] = (float)$a['current_cost'];
+            $a['previous_cost'] = (float)$a['previous_cost'];
+            $a['cost_change_percent'] = (float)$a['cost_change_percent'];
+            $a['selling_price'] = (float)$a['selling_price'];
+            $a['current_margin_percent'] = (float)$a['current_margin_percent'];
+            $a['auto_price_update'] = (bool)$a['auto_price_update'];
+            $a['current_stock'] = (float)$a['current_stock'];
+        }
+
+        Response::success($alerts);
     }
 }

@@ -214,7 +214,8 @@ class InventoryController
             ], 'Inventory stock adjusted successfully!');
         } catch (\Throwable $e) {
             Database::rollBack();
-            Response::error('Failed to adjust stock: ' . $e->getMessage(), 500);
+            error_log("Failed to adjust stock: " . $e->getMessage());
+            Response::error('Unable to adjust stock. Please check inputs and try again.', 400);
         }
     }
 }

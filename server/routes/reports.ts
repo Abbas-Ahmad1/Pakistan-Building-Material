@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../db/database.js';
 import { verifySession } from './auth.js';
+import { InventoryBatchHelper } from '../utils/inventoryBatch.js';
 
 export const reportsRouter = Router();
 
@@ -270,20 +271,11 @@ reportsRouter.get('/bestsellers', (req: Request, res: Response): any => {
 // GET /api/reports/summary (Comprehensive Business Analytics)
 reportsRouter.get('/summary', (_req: Request, res: Response): any => {
   try {
-    // 1. Inventory Valuation
-    const valuation = db.prepare(`
-      SELECT 
-        COUNT(*) as total_skus,
-        COALESCE(SUM(current_stock), 0) as total_units,
-        COALESCE(SUM(current_stock * purchase_price), 0) as total_cost_value,
-        COALESCE(SUM(current_stock * selling_price), 0) as total_retail_value
-      FROM products
-      WHERE status = 'active'
-    `).get() as any;
-
-    const costVal = valuation?.total_cost_value || 0;
-    const retailVal = valuation?.total_retail_value || 0;
-    const potentialMargin = retailVal - costVal;
+    // 1. Inventory Valuation (True batch-based)
+    const valuation = InventoryBatchHelper.calculateInventoryValuation({ status: 'active' });
+    const costVal = valuation.total_cost_value;
+    const retailVal = valuation.total_retail_value;
+    const potentialMargin = Math.round((retailVal - costVal) * 100) / 100;
 
     // 2. Customer Receivables (Khata Udhaar)
     const customerDebts = db.prepare(`
@@ -331,8 +323,9 @@ reportsRouter.get('/summary', (_req: Request, res: Response): any => {
       success: true,
       data: {
         inventory_valuation: {
-          total_skus: valuation?.total_skus || 0,
-          total_units: valuation?.total_units || 0,
+          total_skus: valuation.total_items,
+          total_items: valuation.total_items,
+          total_units: valuation.total_units,
           total_cost_value: costVal,
           total_retail_value: retailVal,
           potential_margin: potentialMargin,
@@ -354,5 +347,52 @@ reportsRouter.get('/summary', (_req: Request, res: Response): any => {
   } catch (err: any) {
     console.error('Error fetching analytics summary:', err);
     return res.status(500).json({ success: false, message: 'Failed to fetch summary: ' + err.message });
+  }
+});
+
+// GET /api/reports/price-change-alerts - identify products with recent cost spikes or margin changes
+reportsRouter.get('/price-change-alerts', (req: Request, res: Response): any => {
+  try {
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : undefined;
+    const session = verifySession(token);
+
+    if (!session || session.role !== 'ADMIN') {
+      return res.status(403).json({ success: false, message: 'Admin access required.' });
+    }
+
+    const threshold = Number(req.query.threshold) || 5.0;
+
+    const alerts = db
+      .prepare(`
+        SELECT 
+          p.id,
+          p.name,
+          p.sku,
+          p.unit,
+          c.name as category_name,
+          p.purchase_price as current_cost,
+          p.previous_cost,
+          p.cost_change_percent,
+          p.selling_price,
+          p.pricing_mode,
+          p.markup_percentage,
+          p.margin_percentage,
+          p.auto_price_update,
+          p.last_cost_update,
+          p.current_stock,
+          ROUND(((p.selling_price - p.purchase_price) / CASE WHEN p.selling_price > 0 THEN p.selling_price ELSE 1 END) * 100, 2) as current_margin_percent
+        FROM products p
+        LEFT JOIN categories c ON p.category_id = c.id
+        WHERE p.status = 'active'
+          AND (ABS(p.cost_change_percent) >= ? OR (p.previous_cost > 0 AND p.purchase_price != p.previous_cost))
+        ORDER BY ABS(p.cost_change_percent) DESC, p.last_cost_update DESC
+      `)
+      .all(threshold);
+
+    return res.json({ success: true, data: alerts });
+  } catch (err: any) {
+    console.error('Error fetching price alerts:', err);
+    return res.status(500).json({ success: false, message: 'Failed to fetch price alerts: ' + err.message });
   }
 });

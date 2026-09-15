@@ -7,6 +7,7 @@ use App\Core\Auth;
 use App\Core\Database;
 use App\Core\Request;
 use App\Core\Response;
+use App\Core\InvoiceHelper;
 use PDO;
 
 class QuotationsController
@@ -149,9 +150,7 @@ class QuotationsController
         Database::beginTransaction();
 
         try {
-            $year = date('Y');
-            $qCount = (int)$pdo->query("SELECT COUNT(*) FROM quotations")->fetchColumn() + 1;
-            $quoteNumber = sprintf("QT-%s-%04d", $year, $qCount);
+            $quoteNumber = InvoiceHelper::generateQuotationNumber($pdo);
 
             $stmt = $pdo->prepare("
                 INSERT INTO quotations (
@@ -259,10 +258,23 @@ class QuotationsController
         Database::beginTransaction();
 
         try {
-            $year = date('Y');
-            $countRow = (int)$pdo->query("SELECT COUNT(*) FROM sales")->fetchColumn();
-            $nextInvoiceSeq = $countRow + 1001;
-            $invoiceNumber = "INV-{$year}-{$nextInvoiceSeq}";
+            // Unified Invoice Number generation via InvoiceHelper
+            $invoiceNumber = InvoiceHelper::generateInvoiceNumber($pdo);
+
+            // Check configurable negative stock policy
+            $negSettingStmt = $pdo->query("SELECT `value` FROM settings WHERE `key` = 'allow_negative_stock' LIMIT 1");
+            $allowNegativeStock = filter_var($negSettingStmt ? $negSettingStmt->fetchColumn() : false, FILTER_VALIDATE_BOOLEAN);
+
+            if (!$allowNegativeStock) {
+                $pLockStmt = $pdo->prepare("SELECT name, unit, current_stock FROM products WHERE id = ? FOR UPDATE");
+                foreach ($items as $it) {
+                    $pLockStmt->execute([(int)$it['product_id']]);
+                    $pRow = $pLockStmt->fetch(PDO::FETCH_ASSOC);
+                    if ($pRow && (float)$pRow['current_stock'] < (float)$it['quantity']) {
+                        throw new \Exception("Insufficient stock available for '{$pRow['name']}'. Requested: {$it['quantity']}, Available: " . max(0, (float)$pRow['current_stock']) . " {$pRow['unit']}.");
+                    }
+                }
+            }
 
             $totalCogs = 0.0;
             foreach ($items as $it) {
@@ -407,7 +419,9 @@ class QuotationsController
             ], "Quotation converted to Invoice {$invoiceNumber} successfully!", 201);
         } catch (\Throwable $e) {
             Database::rollBack();
-            Response::error('Failed to convert quotation: ' . $e->getMessage(), 500);
+            $msg = $e->getMessage();
+            $statusCode = str_contains($msg, 'Insufficient stock') ? 400 : 500;
+            Response::error($msg, $statusCode);
         }
     }
 

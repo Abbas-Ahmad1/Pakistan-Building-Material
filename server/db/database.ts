@@ -561,6 +561,142 @@ export function initDatabase() {
     `);
   } catch (_) {}
 
+  // Dynamic Costing & Inventory Batches Schema (FIFO, Weighted Average, Price History)
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS inventory_batches (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        product_id INTEGER NOT NULL,
+        branch_id INTEGER NOT NULL DEFAULT 1,
+        purchase_id INTEGER,
+        supplier_id INTEGER,
+        batch_number TEXT NOT NULL,
+        unit_cost REAL NOT NULL,
+        initial_quantity REAL NOT NULL,
+        remaining_quantity REAL NOT NULL,
+        received_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        expiry_date DATE,
+        notes TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (product_id) REFERENCES products(id),
+        FOREIGN KEY (branch_id) REFERENCES branches(id),
+        FOREIGN KEY (purchase_id) REFERENCES purchases(id),
+        FOREIGN KEY (supplier_id) REFERENCES suppliers(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS inventory_batch_transactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        batch_id INTEGER NOT NULL,
+        transaction_type TEXT CHECK(transaction_type IN ('PURCHASE', 'SALE', 'SALE_RETURN', 'PURCHASE_RETURN', 'TRANSFER_IN', 'TRANSFER_OUT', 'ADJUSTMENT')) NOT NULL,
+        reference_type TEXT NOT NULL,
+        reference_id INTEGER,
+        quantity REAL NOT NULL,
+        unit_cost REAL NOT NULL,
+        remaining_quantity_after REAL NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (batch_id) REFERENCES inventory_batches(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS product_price_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        product_id INTEGER NOT NULL,
+        branch_id INTEGER,
+        old_cost REAL NOT NULL DEFAULT 0.00,
+        new_cost REAL NOT NULL DEFAULT 0.00,
+        cost_change_percent REAL NOT NULL DEFAULT 0.00,
+        old_selling_price REAL NOT NULL DEFAULT 0.00,
+        new_selling_price REAL NOT NULL DEFAULT 0.00,
+        price_change_percent REAL NOT NULL DEFAULT 0.00,
+        pricing_mode TEXT DEFAULT 'FIXED',
+        reason TEXT,
+        purchase_id INTEGER,
+        user_id INTEGER,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+        FOREIGN KEY (branch_id) REFERENCES branches(id),
+        FOREIGN KEY (purchase_id) REFERENCES purchases(id),
+        FOREIGN KEY (user_id) REFERENCES users(id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_batches_product_branch ON inventory_batches(product_id, branch_id);
+      CREATE INDEX IF NOT EXISTS idx_batches_remaining ON inventory_batches(product_id, remaining_quantity);
+      CREATE INDEX IF NOT EXISTS idx_price_history_prod ON product_price_history(product_id);
+
+      CREATE TABLE IF NOT EXISTS purchase_returns (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        return_number TEXT UNIQUE NOT NULL,
+        purchase_id INTEGER NOT NULL,
+        supplier_id INTEGER NOT NULL,
+        branch_id INTEGER NOT NULL DEFAULT 1,
+        total_amount REAL NOT NULL,
+        refund_type TEXT DEFAULT 'LEDGER_CREDIT',
+        reason TEXT,
+        created_by INTEGER,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (purchase_id) REFERENCES purchases(id),
+        FOREIGN KEY (supplier_id) REFERENCES suppliers(id),
+        FOREIGN KEY (branch_id) REFERENCES branches(id),
+        FOREIGN KEY (created_by) REFERENCES users(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS purchase_return_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        return_id INTEGER NOT NULL,
+        product_id INTEGER NOT NULL,
+        quantity REAL NOT NULL,
+        unit_cost REAL NOT NULL,
+        total_amount REAL NOT NULL,
+        batch_id INTEGER,
+        reason TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (return_id) REFERENCES purchase_returns(id) ON DELETE CASCADE,
+        FOREIGN KEY (product_id) REFERENCES products(id),
+        FOREIGN KEY (batch_id) REFERENCES inventory_batches(id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_purchase_returns_purchase ON purchase_returns(purchase_id);
+      CREATE INDEX IF NOT EXISTS idx_purchase_returns_supplier ON purchase_returns(supplier_id);
+      CREATE INDEX IF NOT EXISTS idx_purchase_return_items_return ON purchase_return_items(return_id);
+    `);
+  } catch (_) {}
+
+  // Column migrations on products and purchases for dynamic pricing and returns
+  try { db.exec('ALTER TABLE products ADD COLUMN previous_cost REAL DEFAULT 0.00;'); } catch (_) {}
+  try { db.exec('ALTER TABLE products ADD COLUMN cost_change_percent REAL DEFAULT 0.00;'); } catch (_) {}
+  try { db.exec("ALTER TABLE products ADD COLUMN pricing_mode TEXT DEFAULT 'FIXED';"); } catch (_) {}
+  try { db.exec('ALTER TABLE products ADD COLUMN markup_percentage REAL DEFAULT 0.00;'); } catch (_) {}
+  try { db.exec('ALTER TABLE products ADD COLUMN margin_percentage REAL DEFAULT 0.00;'); } catch (_) {}
+  try { db.exec('ALTER TABLE products ADD COLUMN auto_price_update INTEGER DEFAULT 0;'); } catch (_) {}
+  try { db.exec('ALTER TABLE products ADD COLUMN last_cost_update DATETIME;'); } catch (_) {}
+  try { db.exec('ALTER TABLE products ADD COLUMN weighted_avg_cost REAL DEFAULT 0.00;'); } catch (_) {}
+  try { db.exec("ALTER TABLE purchases ADD COLUMN costing_method TEXT DEFAULT 'FIFO';"); } catch (_) {}
+  try { db.exec('ALTER TABLE purchases ADD COLUMN returned_amount REAL DEFAULT 0.00;'); } catch (_) {}
+  try { db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES ('allow_negative_stock', '0')`).run(); } catch (_) {}
+
+  // Backfill products and opening batches
+  try {
+    db.exec(`
+      UPDATE products SET previous_cost = purchase_price WHERE previous_cost IS NULL OR previous_cost = 0;
+      UPDATE products SET weighted_avg_cost = purchase_price WHERE weighted_avg_cost IS NULL OR weighted_avg_cost = 0;
+      UPDATE products SET last_cost_update = updated_at WHERE last_cost_update IS NULL;
+    `);
+
+    const existingBatchesCount = (db.prepare('SELECT COUNT(*) as c FROM inventory_batches').get() as { c: number })?.c || 0;
+    if (existingBatchesCount === 0) {
+      const prodsWithStock = db.prepare('SELECT id, current_stock, purchase_price, supplier_id FROM products WHERE current_stock > 0').all() as any[];
+      const insertBatch = db.prepare(`
+        INSERT INTO inventory_batches (
+          product_id, branch_id, supplier_id, batch_number, unit_cost, initial_quantity, remaining_quantity, received_date, notes
+        ) VALUES (?, 1, ?, ?, ?, ?, ?, datetime('now'), 'Opening initial batch')
+      `);
+      for (const p of prodsWithStock) {
+        const batchNum = `BATCH-INIT-1-${p.id}`;
+        insertBatch.run(p.id, p.supplier_id || null, batchNum, p.purchase_price || 0, p.current_stock, p.current_stock);
+      }
+    }
+  } catch (_) {}
+
   seedInitialData();
 
   // Ensure current store branding and owner match latest configuration

@@ -306,7 +306,8 @@ class SuppliersController
             ], 'Supplier payment recorded successfully', 201);
         } catch (\Throwable $e) {
             Database::rollBack();
-            Response::error('Failed to record supplier payment: ' . $e->getMessage(), 500);
+            error_log("Failed to record supplier payment: " . $e->getMessage());
+            Response::error('Unable to record supplier payment. Please check details and try again.', 400);
         }
     }
 }

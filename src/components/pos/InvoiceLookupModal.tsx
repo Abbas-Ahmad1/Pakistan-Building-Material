@@ -797,7 +797,7 @@ export const InvoiceLookupModal: React.FC<InvoiceLookupModalProps> = ({
                         <div className="p-3 bg-stone-100 rounded-lg text-[11px] text-stone-600 space-y-0.5">
                           <p className="font-bold text-stone-800">Database & Khata Ledger Synchronization:</p>
                           <p>
-                            Collecting payment will immediately record a customer receipt in the SQLite ledger and reduce{' '}
+                            Collecting payment will immediately record a customer receipt in the customer ledger and reduce{' '}
                             <strong>{currentSale.customer_name}</strong>'s pending balance.
                           </p>
                         </div>
@@ -1042,7 +1042,7 @@ export const InvoiceLookupModal: React.FC<InvoiceLookupModalProps> = ({
                       <p className="font-bold">Item Return & Automatic Inventory Restock</p>
                       <p className="text-[11px] text-amber-800 mt-0.5 leading-relaxed">
                         Select the quantity to return for each line item. Returned stock will be automatically added back
-                        to the SQLite products table and inventory audit trail. Financial totals will be recalculated
+                        to the products catalog and inventory audit trail. Financial totals will be recalculated
                         immediately.
                       </p>
                     </div>

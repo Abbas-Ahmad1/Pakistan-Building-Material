@@ -124,8 +124,16 @@ CREATE TABLE `products` (
   `description` TEXT DEFAULT NULL,
   `unit` VARCHAR(30) NOT NULL DEFAULT 'Piece',
   `purchase_price` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  `previous_cost` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  `cost_change_percent` DECIMAL(8,2) NOT NULL DEFAULT 0.00,
   `selling_price` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
   `wholesale_price` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  `pricing_mode` ENUM('FIXED', 'MARKUP', 'MARGIN') NOT NULL DEFAULT 'FIXED',
+  `markup_percentage` DECIMAL(8,2) NOT NULL DEFAULT 0.00,
+  `margin_percentage` DECIMAL(8,2) NOT NULL DEFAULT 0.00,
+  `auto_price_update` TINYINT(1) NOT NULL DEFAULT 0,
+  `last_cost_update` DATETIME DEFAULT NULL,
+  `weighted_avg_cost` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
   `current_stock` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
   `minimum_stock` DECIMAL(12,2) NOT NULL DEFAULT 5.00,
   `supplier_id` INT DEFAULT NULL,
@@ -482,7 +490,71 @@ CREATE TABLE `inventory_transactions` (
   CONSTRAINT `fk_inv_tx_branch` FOREIGN KEY (`branch_id`) REFERENCES `branches` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- 25. EXPENSES
+-- 25. INVENTORY BATCHES (Granular Cost Layers for FIFO & AVCO Costing)
+DROP TABLE IF EXISTS `inventory_batches`;
+CREATE TABLE `inventory_batches` (
+  `id` INT AUTO_INCREMENT PRIMARY KEY,
+  `product_id` INT NOT NULL,
+  `branch_id` INT NOT NULL DEFAULT 1,
+  `supplier_id` INT DEFAULT NULL,
+  `purchase_id` INT DEFAULT NULL,
+  `batch_number` VARCHAR(100) NOT NULL,
+  `unit_cost` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  `retail_selling_price` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  `wholesale_selling_price` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  `initial_quantity` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  `remaining_quantity` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  `received_date` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `notes` TEXT DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX `idx_batch_product_branch_rem` (`product_id`, `branch_id`, `remaining_quantity`),
+  INDEX `idx_batch_purchase` (`purchase_id`),
+  INDEX `idx_batch_number` (`batch_number`),
+  CONSTRAINT `fk_batches_product` FOREIGN KEY (`product_id`) REFERENCES `products` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_batches_branch` FOREIGN KEY (`branch_id`) REFERENCES `branches` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_batches_supplier` FOREIGN KEY (`supplier_id`) REFERENCES `suppliers` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_batches_purchase` FOREIGN KEY (`purchase_id`) REFERENCES `purchases` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 26. INVENTORY BATCH TRANSACTIONS (Batch Depletion & Replenishment Audit)
+DROP TABLE IF EXISTS `inventory_batch_transactions`;
+CREATE TABLE `inventory_batch_transactions` (
+  `id` INT AUTO_INCREMENT PRIMARY KEY,
+  `batch_id` INT NOT NULL,
+  `transaction_type` VARCHAR(50) NOT NULL,
+  `reference_type` VARCHAR(50) NOT NULL,
+  `reference_id` INT DEFAULT NULL,
+  `quantity` DECIMAL(12,2) NOT NULL,
+  `unit_cost` DECIMAL(12,2) NOT NULL,
+  `remaining_quantity_after` DECIMAL(12,2) NOT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX `idx_batch_tx_batch` (`batch_id`),
+  INDEX `idx_batch_tx_ref` (`reference_type`, `reference_id`),
+  CONSTRAINT `fk_batch_tx_batch` FOREIGN KEY (`batch_id`) REFERENCES `inventory_batches` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 27. PRODUCT PRICE HISTORY (Historical Cost & Selling Price Audit Trail)
+DROP TABLE IF EXISTS `product_price_history`;
+CREATE TABLE `product_price_history` (
+  `id` INT AUTO_INCREMENT PRIMARY KEY,
+  `product_id` INT NOT NULL,
+  `branch_id` INT DEFAULT NULL,
+  `old_cost` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  `new_cost` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  `cost_change_percent` DECIMAL(8,2) NOT NULL DEFAULT 0.00,
+  `old_selling_price` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  `new_selling_price` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  `price_change_percent` DECIMAL(8,2) NOT NULL DEFAULT 0.00,
+  `pricing_mode` VARCHAR(50) NOT NULL DEFAULT 'FIXED',
+  `reason` TEXT NOT NULL,
+  `user_id` INT DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX `idx_price_history_product` (`product_id`, `created_at`),
+  CONSTRAINT `fk_price_hist_product` FOREIGN KEY (`product_id`) REFERENCES `products` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_price_hist_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 28. EXPENSES
 DROP TABLE IF EXISTS `expenses`;
 CREATE TABLE `expenses` (
   `id` INT AUTO_INCREMENT PRIMARY KEY,

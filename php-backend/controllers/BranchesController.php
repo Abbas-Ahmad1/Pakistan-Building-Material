@@ -109,7 +109,8 @@ class BranchesController
             Response::success(['id' => $branchId, 'name' => $name, 'code' => $code], 'Branch created successfully', 201);
         } catch (\Throwable $e) {
             Database::rollBack();
-            Response::error('Failed to create branch: ' . $e->getMessage(), 500);
+            error_log("Failed to create branch: " . $e->getMessage());
+            Response::error('Unable to create branch. Please check input and try again.', 400);
         }
     }
 
@@ -382,7 +383,8 @@ class BranchesController
             ], "Stock transfer #{$transferNumber} completed successfully!");
         } catch (\Throwable $e) {
             Database::rollBack();
-            Response::error('Failed to complete stock transfer: ' . $e->getMessage(), 500);
+            error_log("Failed to complete stock transfer: " . $e->getMessage());
+            Response::error('Unable to complete stock transfer. Please verify stock quantities and try again.', 400);
         }
     }
 

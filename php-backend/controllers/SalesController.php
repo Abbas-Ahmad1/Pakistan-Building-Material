@@ -7,6 +7,8 @@ use App\Core\Auth;
 use App\Core\Database;
 use App\Core\Request;
 use App\Core\Response;
+use App\Core\InvoiceHelper;
+use App\Core\InventoryBatchHelper;
 use PDO;
 
 class SalesController
@@ -341,19 +343,12 @@ class SalesController
                 $customerId = (int)$customerId;
             }
 
-            // 2. Generate Sequential Unique Invoice Number: INV-YYYYMMDD-XXXX
-            $datePrefix = date('Ymd');
-            $countStmt = $pdo->prepare("SELECT COUNT(*) FROM sales WHERE invoice_number LIKE ?");
-            $countStmt->execute(["INV-{$datePrefix}-%"]);
-            $seq = (int)$countStmt->fetchColumn() + 1;
-            $invoiceNumber = sprintf("INV-%s-%04d", $datePrefix, $seq);
+            // 2. Generate Sequential Unique Invoice Number via unified InvoiceHelper
+            $invoiceNumber = InvoiceHelper::generateInvoiceNumber($pdo);
 
-            // Double check uniqueness
-            $dupCheck = $pdo->prepare("SELECT id FROM sales WHERE invoice_number = ?");
-            $dupCheck->execute([$invoiceNumber]);
-            if ($dupCheck->fetch()) {
-                $invoiceNumber = sprintf("INV-%s-%04d-%s", $datePrefix, $seq, substr(uniqid(), -3));
-            }
+            // Fetch configurable negative stock policy
+            $negSettingStmt = $pdo->query("SELECT `value` FROM settings WHERE `key` = 'allow_negative_stock' LIMIT 1");
+            $allowNegativeStock = filter_var($negSettingStmt ? $negSettingStmt->fetchColumn() : false, FILTER_VALIDATE_BOOLEAN);
 
             // 3. Process Items & Calculate COGS / Stock Deductions
             $cogsTotal = 0.00;
@@ -361,11 +356,11 @@ class SalesController
 
             $prodStmt = $pdo->prepare("
                 SELECT id, name, sku, unit, purchase_price, selling_price, current_stock
-                FROM products WHERE id = ?
+                FROM products WHERE id = ? FOR UPDATE
             ");
 
             $bsStmt = $pdo->prepare("
-                SELECT current_stock FROM branch_stocks WHERE branch_id = ? AND product_id = ?
+                SELECT current_stock FROM branch_stocks WHERE branch_id = ? AND product_id = ? FOR UPDATE
             ");
 
             foreach ($items as $item) {
@@ -386,13 +381,23 @@ class SalesController
                     throw new \Exception("Product ID #{$pId} not found in catalog.");
                 }
 
+                $bsStmt->execute([$branchId, $pId]);
+                $branchStockBefore = (float)($bsStmt->fetchColumn() ?: 0.00);
+
+                // Enforce stock availability if allow_negative_stock is disabled
+                if (!$allowNegativeStock) {
+                    if ((float)$prod['current_stock'] < $qty) {
+                        throw new \Exception("Insufficient stock available for '{$prod['name']}'. Requested: {$qty}, Available: " . max(0, (float)$prod['current_stock']) . " {$prod['unit']}.");
+                    }
+                    if ($branchStockBefore < $qty) {
+                        throw new \Exception("Insufficient branch stock available for '{$prod['name']}'. Requested: {$qty}, Available: " . max(0, $branchStockBefore) . " {$prod['unit']}.");
+                    }
+                }
+
                 $unitCost = (float)($item['unit_cost'] ?? $prod['purchase_price']);
                 $lineCost = round($qty * $unitCost, 2);
                 $lineProfit = round($lineTotal - $lineCost, 2);
                 $cogsTotal += $lineCost;
-
-                $bsStmt->execute([$branchId, $pId]);
-                $branchStockBefore = (float)($bsStmt->fetchColumn() ?: 0.00);
 
                 $processedItems[] = [
                     'product_id'          => $pId,
@@ -413,7 +418,7 @@ class SalesController
 
             $grossProfit = round($grandTotal - $cogsTotal, 2);
 
-            // 4. Insert Sale Master Record
+            // 4. Insert Sale Master Record (with placeholder cogs, updated after precise batch consumption)
             $saleInsert = $pdo->prepare("
                 INSERT INTO sales (
                     invoice_number, customer_id, sale_date, subtotal, tax_amount, discount_amount,
@@ -422,7 +427,7 @@ class SalesController
                     cashier_id, cashier_name, branch_id, shift_id, delivery_status, loading_fee
                 ) VALUES (
                     ?, ?, NOW(), ?, ?, ?,
-                    ?, ?, ?, 0.00, ?,
+                    ?, ?, ?, 0.00, 0.00,
                     ?, ?, ?, ?, ?,
                     ?, ?, ?, ?, ?, ?
                 )
@@ -430,14 +435,14 @@ class SalesController
 
             $saleInsert->execute([
                 $invoiceNumber, $customerId, $subtotal, $taxAmount, $discountAmount,
-                $grandTotal, $grandTotal, $grandTotal, $cogsTotal,
-                $grossProfit, $paidAmount, $dueAmount, $paymentMethod, $paymentStatus,
+                $grandTotal, $grandTotal, $grandTotal,
+                $grandTotal, $paidAmount, $dueAmount, $paymentMethod, $paymentStatus,
                 $userId, $session['name'], $branchId, $shiftId, $deliveryStatus, $loadingFee
             ]);
 
             $saleId = (int)$pdo->lastInsertId();
 
-            // 5. Insert Sale Items, Update Stock & Inventory Transactions
+            // 5. Insert Sale Items, Consume Stock from Batches (FIFO / AVCO), Update Stock & Ledger
             $itemInsert = $pdo->prepare("
                 INSERT INTO sale_items (
                     sale_id, product_id, quantity, unit_cost, unit_price, discount,
@@ -463,9 +468,23 @@ class SalesController
             ");
 
             foreach ($processedItems as $pi) {
+                // Consume inventory batches using FIFO / AVCO costing
+                $consumption = InventoryBatchHelper::consumeStockForSale(
+                    $pdo,
+                    $pi['product_id'],
+                    $branchId,
+                    $pi['quantity'],
+                    $saleId
+                );
+
+                $actualUnitCost = $consumption['effective_unit_cost'] > 0 ? $consumption['effective_unit_cost'] : $pi['unit_cost'];
+                $actualLineCost = $consumption['cogs'] > 0 ? $consumption['cogs'] : round($pi['quantity'] * $actualUnitCost, 2);
+                $actualLineProfit = round($pi['line_total'] - $actualLineCost, 2);
+                $cogsTotal += $actualLineCost;
+
                 $itemInsert->execute([
-                    $saleId, $pi['product_id'], $pi['quantity'], $pi['unit_cost'], $pi['unit_price'],
-                    $pi['discount'], $pi['line_total'], $pi['line_profit'],
+                    $saleId, $pi['product_id'], $pi['quantity'], $actualUnitCost, $pi['unit_price'],
+                    $pi['discount'], $pi['line_total'], $actualLineProfit,
                     $pi['returned_quantity'], $pi['remaining_quantity'], $pi['delivered_quantity']
                 ]);
 
@@ -474,18 +493,21 @@ class SalesController
                 $stockUpdateBranch->execute([$branchId, $pi['product_id'], $pi['quantity']]);
 
                 // Inventory transaction audit
+                $stockAfterGlobal = $pi['global_stock_before'] - $pi['quantity'];
                 $invTxInsert->execute([
-                    $pi['product_id'],
-                    $saleId,
-                    -$pi['quantity'],
-                    $pi['unit_cost'],
-                    $pi['branch_stock_before'],
-                    $pi['branch_stock_before'] - $pi['quantity'],
-                    "Sale Invoice #{$invoiceNumber}",
-                    $userId,
-                    $branchId
+                    $pi['product_id'], $saleId, -$pi['quantity'], $actualUnitCost,
+                    $pi['global_stock_before'], $stockAfterGlobal,
+                    "Sale invoice #{$invoiceNumber} (Method: {$consumption['costing_method']})",
+                    $userId, $branchId
                 ]);
             }
+
+            $grossProfit = round($grandTotal - $cogsTotal, 2);
+
+            // Update master sale with exact calculated batch COGS & gross profit
+            $pdo->prepare("
+                UPDATE sales SET cogs_total = ?, gross_profit = ? WHERE id = ?
+            ")->execute([$cogsTotal, $grossProfit, $saleId]);
 
             // 6. Update Customer Ledger Balance (Khata)
             $custUpdate = $pdo->prepare("
@@ -551,7 +573,9 @@ class SalesController
             ], "Invoice #{$invoiceNumber} created successfully!", 201);
         } catch (\Throwable $e) {
             Database::rollBack();
-            Response::error('Failed to complete sale transaction: ' . $e->getMessage(), 500);
+            $msg = $e->getMessage();
+            $statusCode = str_contains($msg, 'Insufficient stock') ? 400 : 500;
+            Response::error($msg, $statusCode);
         }
     }
 
@@ -714,6 +738,16 @@ class SalesController
                 $updateSaleItem->execute([$pr['returned_quantity'], $pr['sale_item_id']]);
                 $restockGlobal->execute([$pr['returned_quantity'], $pr['product_id']]);
                 $restockBranch->execute([$pr['returned_quantity'], $sale['branch_id'], $pr['product_id']]);
+
+                // Restore batch layer
+                InventoryBatchHelper::restoreStockForReturn(
+                    $pdo,
+                    $pr['product_id'],
+                    (int)$sale['branch_id'],
+                    $pr['returned_quantity'],
+                    $returnId,
+                    $pr['unit_cost']
+                );
 
                 $invTxStmt->execute([
                     $pr['product_id'],

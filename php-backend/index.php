@@ -78,16 +78,50 @@ use App\Controllers\SettingsController;
 use App\Controllers\UploadController;
 use App\Controllers\UsersController;
 use App\Controllers\DashboardController;
+use App\Core\Auth;
+use App\Core\Migrator;
+use App\Core\Database;
 
-// Handle CORS
-$origin = $_SERVER['HTTP_ORIGIN'] ?? '*';
-header("Access-Control-Allow-Origin: {$origin}");
-header("Access-Control-Allow-Credentials: true");
+$config = require __DIR__ . '/config/config.php';
+$allowedOrigins = $config['cors']['allowed_origins'] ?? [];
+
+$requestOrigin = $_SERVER['HTTP_ORIGIN'] ?? '';
+$isAllowedOrigin = false;
+
+if ($requestOrigin !== '') {
+    // 1. Exact match in allowed origins configuration
+    if (in_array($requestOrigin, $allowedOrigins, true)) {
+        $isAllowedOrigin = true;
+    } else {
+        // 2. Same-origin match (request host matches server host)
+        $originHost = parse_url($requestOrigin, PHP_URL_HOST);
+        $serverHost = parse_url('http://' . ($_SERVER['HTTP_HOST'] ?? ''), PHP_URL_HOST);
+        if ($originHost && $serverHost && strtolower($originHost) === strtolower($serverHost)) {
+            $isAllowedOrigin = true;
+        } elseif (in_array('*', $allowedOrigins, true) || getenv('APP_ENV') === 'development') {
+            $isAllowedOrigin = true;
+        }
+    }
+}
+
+// Apply CORS headers safely
+if ($isAllowedOrigin && $requestOrigin !== '') {
+    header("Access-Control-Allow-Origin: {$requestOrigin}");
+    header("Access-Control-Allow-Credentials: true");
+    header("Vary: Origin");
+}
+
 header("Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Accept, Origin");
+header("Access-Control-Max-Age: 86400");
 
 // Respond to OPTIONS preflight immediately
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    if ($requestOrigin !== '' && !$isAllowedOrigin) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Origin not permitted by CORS policy']);
+        exit;
+    }
     http_response_code(204);
     exit;
 }
@@ -116,6 +150,9 @@ $router->post('/api/auth/switch-branch', [AuthController::class, 'switchBranch']
 // Products Catalog Routes
 $router->get('/api/products/search', [ProductsController::class, 'search']);
 $router->get('/api/products', [ProductsController::class, 'index']);
+$router->post('/api/products/bulk-price-update', [ProductsController::class, 'bulkPriceUpdate']);
+$router->get('/api/products/{id}/price-history', [ProductsController::class, 'priceHistory']);
+$router->get('/api/products/{id}/batches', [ProductsController::class, 'batches']);
 $router->get('/api/products/{id}', [ProductsController::class, 'show']);
 $router->post('/api/products', [ProductsController::class, 'store']);
 $router->put('/api/products/{id}', [ProductsController::class, 'update']);
@@ -202,6 +239,7 @@ $router->get('/api/reports/profit-loss', [ReportsController::class, 'profitLoss'
 $router->get('/api/reports/bestsellers', [ReportsController::class, 'bestsellers']);
 $router->get('/api/reports/summary', [ReportsController::class, 'summary']);
 $router->get('/api/reports/dead-stock', [ReportsController::class, 'deadStock']);
+$router->get('/api/reports/price-change-alerts', [ReportsController::class, 'priceChangeAlerts']);
 
 // Islamic Zakat Assessment Routes
 $router->get('/api/zakat/calculate', [ZakatController::class, 'calculate']);
@@ -226,9 +264,45 @@ $router->post('/api/users', [UsersController::class, 'store']);
 $router->put('/api/users/{id}', [UsersController::class, 'update']);
 $router->delete('/api/users/{id}', [UsersController::class, 'destroy']);
 
+// Database Schema Migration Routes (ADMIN Only)
+$router->get('/api/system/migrations', function (Request $req) {
+    $session = Auth::requireAuth($req);
+    Auth::requireAdmin($session);
+
+    $pdo = Database::getConnection();
+    $migrator = new Migrator($pdo);
+    Response::success($migrator->getStatus(), 'Migration status retrieved');
+});
+
+$router->post('/api/system/migrations/run', function (Request $req) {
+    $session = Auth::requireAuth($req);
+    Auth::requireAdmin($session);
+
+    $pdo = Database::getConnection();
+    $migrator = new Migrator($pdo);
+    $results = $migrator->runPending();
+
+    if (!empty($results['errors'])) {
+        Response::error('Migration run encountered errors: ' . json_encode($results['errors']), 500, $results);
+        return;
+    }
+
+    Auth::logAudit(
+        $session['userId'],
+        'MIGRATION_RUN',
+        'System',
+        null,
+        'Applied ' . count($results['applied']) . ' migrations: ' . implode(', ', $results['applied']),
+        $req->getClientIp()
+    );
+
+    Response::success($results, 'Pending migrations executed successfully');
+});
+
 // Dispatch Request
 try {
     $router->dispatch($_SERVER['REQUEST_METHOD'], $_SERVER['REQUEST_URI'], $request);
 } catch (\Throwable $e) {
-    Response::error('Internal Server Error: ' . $e->getMessage(), 500);
+    error_log("Unhandled Application Exception: " . $e->getMessage() . "\n" . $e->getTraceAsString());
+    Response::error('An unexpected server error occurred. Please try again.', 500);
 }
